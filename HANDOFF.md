@@ -1,91 +1,105 @@
-# Igroteka — Session Handoff (2026-07-06)
+# Igroteka — Session Handoff (2026-07-06, session 2)
 
-State of the WASM port at the end of the last session, and exactly where to resume.
+State of the WASM port and exactly where to resume.
 
 ## Where we are
 
-The C&C Generals Zero Hour engine **compiles to WebAssembly, boots in a browser
-tab, and runs end-to-end** through the d8web D3D8→WebGL2 translation layer:
+The C&C Generals Zero Hour engine **runs in a browser tab and renders its main
+menu with working text** through the d8web D3D8→WebGL2 layer:
 
-- Full engine builds via the `wasm` CMake preset (no vcpkg). Output:
-  `zh-web/build/wasm/GeneralsMD/GeneralsXZH.{js,wasm}` (~9 MB wasm).
-- Boots, loads `.big` archives from the browser FS, parses all INI + CSF
-  (6422 strings), inits every subsystem, loads `Menus/MainMenu.wnd`.
-- Drives **13,500+ D3D8 draw calls per frame** through the d8web bridge to
-  WebGL2, staying responsive via an `emscripten_set_main_loop` RAF loop.
+- Full engine builds via the `wasm` CMake preset. Output:
+  `zh-web/build/wasm/GeneralsMD/GeneralsXZH.{js,wasm}`.
+- Boots, loads `.big` archives, inits every subsystem, reaches MainMenu.wnd.
+- **Renders**: GENERALS ZERO:HOUR logo, all six menu buttons with labels
+  (SOLO PLAY / MULTIPLAYER / LOAD / OPTIONS / CREDITS / EXIT GAME), version
+  string, FPS counter (~30 fps).
 
-## The one open bug: nothing renders (canvas black)
+## Fixed this session
 
-**Confirmed by a magenta-clear probe:** d8web owns the visible canvas — a forced
-`glClearColor(1,0,1,1)` paints the whole canvas magenta. So the pipeline reaches
-the screen. But all 13,500 draws execute (no GL errors) and produce **zero
-visible fragments** on top of the clear.
+1. **Black canvas (was the big open bug)** — everything was back-face culled.
+   The D3DCULL→glFrontFace mapping had been calibrated against the cube demo,
+   whose indices were wound CCW-visual (GL habit) while the comment claimed CW.
+   Engine truth (menu draws use `D3DCULL_CW`, non-RHW path): **D3DCULL_CW must
+   keep GL-CCW front faces**; XYZRHW path takes the opposite (shader y-flip
+   mirrors winding). Fixed in `d8web/src/backends/webgl2/gl_backend.cpp`
+   (`applyFixedState` now takes the ShaderKey). Cube demo rewound to D3D
+   convention. Commit `e80cbea`.
+2. **No text** — two independent causes, both needed:
+   - No font file: the fontconfig stub resolves every query to
+     `/fonts/default.ttf`, but nothing was staged there → `FT_New_Face` failed
+     silently. boot.html now fetches `gamedata/default.ttf` (serve any sans
+     TTF there; Arial.ttf from macOS works, not committed) into `/fonts/`.
+   - `CopyRects` was a stub in d8web. The engine rasterizes glyphs into an
+     A4R4G4B4 image surface and transfers it into sentence textures via
+     `_Copy_DX8_Rects` → sentence textures stayed transparent. Implemented as
+     a same-format CPU blit + texture-level re-upload. Commits `fa9ac0f`
+     (d8web), `2bd18fb` (zh-web; also tracks boot.html under `wasm/`).
+   - Diagnostics: `[FONT]` log lines (guarded `__EMSCRIPTEN__`) in
+     `render2dsentence.cpp` show font resolution in the boot log.
 
-That isolates the bug to per-draw geometry/state, not plumbing. Ranked suspects:
+## The one remaining visual bug: placeholder-magenta textures
 
-1. **Global cull winding (most likely).** The cube demo needed
-   `glFrontFace(GL_CCW)` for `D3DCULL_CCW`, hand-tuned to the cube's winding. The
-   engine's real geometry may wind the opposite way, so everything back-face
-   culls → invisible. Test: force `glDisable(GL_CULL_FACE)` unconditionally in
-   `applyFixedState` and re-screenshot. If content appears, the winding
-   convention is inverted — figure out the correct mapping against real engine
-   geometry (W3D meshes), not the demo cube.
-2. **XYZRHW UI transform.** The shell/menu draws are pre-transformed. If
-   `uViewportSize` is 0 at draw time, the NDC divide is NaN and quads vanish.
-   Verify `m_viewport.Width/Height` are non-zero when UI draws run (they log
-   `vp=1024x768` on clear, but confirm at draw).
-3. **Depth test.** If ZENABLE is on and the depth buffer isn't cleared per frame,
-   everything can z-reject. Check the engine's per-frame Clear includes
-   `D3DCLEAR_ZBUFFER`.
+The whole menu background is W3D missing-texture magenta (`FF00FF7F`), and
+button/window art besides the logo is absent. The logo texture loads, so the
+texture pipeline works — most textures never get their real bits.
 
-Diagnostic harness already in place (behind `-DD8WEB_DEBUG_CLEAR` and the
-`m_drawCount/m_clearCount/m_texUploads` counters in `gl_backend.cpp`). Add a
-per-draw dump of cull mode + depth func + first transformed vertex position to
-see whether geometry lands in NDC range.
+**Top suspect (investigated, not yet fixed):** W3D's texture loading is
+asynchronous. `LoaderThreadClass::Thread_Function`
+(`Core/Libraries/Source/WWVegas/WW3D2/textureloader.cpp:1009`) pops
+`_BackgroundQueue` and loads mips on a background thread. On wasm (no
+threads compiled in), that thread never runs, so every texture that goes
+through the background path stays at its thumbnail/missing placeholder
+forever. `TextureLoader::Update()` (line ~870) is called per-frame on the
+main thread and already processes the foreground queue.
 
-## Second issue (independent): textures load as placeholder magenta
+**Suggested fix:** on `__EMSCRIPTEN__`, drain `_BackgroundQueue` synchronously
+inside `TextureLoader::Update()` — pop task, `task->Load()`, push to
+`_ForegroundQueue` — i.e. inline exactly what `Thread_Function` does, before
+the normal foreground processing. Keep it guarded so native builds are
+unchanged.
 
-`texUpload` logs show `first=FF00FF7F` (magenta placeholder) even after staging
-`TexturesZH.big`/`W3DZH.big`. The engine's texture loader isn't finding the real
-art in the archives — likely a VFS path/case mismatch or the loader looking in a
-`.big` we didn't mount. Fix after the render bug (invisible geometry masks it
-anyway). Also seen: `[ASSET_FAIL] shaders/Trees.vso` — the engine probes for
-`.vso`/`.pso` shader files; harmless (we report no programmable shaders), but the
-asset-path normalization is worth a look.
+Also: the menu 3D shell map needs `MapsZH.big` (not currently staged in
+boot.html) — add it to the staging list once textures load, or the background
+will stay a flat plane.
+
+Second look later: `[ASSET_FAIL] shaders/*.vso/.pso` — fillCaps() advertises
+programmable shaders, so terrain probes for .pso files. Harmless now; consider
+capping `VertexShaderVersion`/`PixelShaderVersion` to 0 in the bridge.
 
 ## How to build + run
 
 ```bash
 cd ~/Work/experiments/igroteka/zh-web
-emcmake cmake --preset wasm
+emcmake cmake --preset wasm            # configure (once)
 cmake --build build/wasm --target z_generals    # ~2 min incremental
-# serve (already may be running on 8932):
 cd build/wasm/GeneralsMD && python3 -m http.server 8932
-# game .big files symlinked into build/wasm/GeneralsMD/gamedata/ from ~/GeneralsX/GeneralsZH/
+# gamedata/: symlinks to ~/GeneralsX/GeneralsZH/*.big  +  default.ttf (any sans TTF)
+# boot.html source of truth: zh-web/wasm/boot.html (copy into the serve dir)
 ```
 
-Open `http://localhost:8932/boot.html` in a **headed** browser (headless Chromium
-has no WebGL2). Use gstack `/browse --headed` — every command needs the `--headed`
-flag or it spawns a second daemon. boot.html stages the `.big` files, shows a live
-autoscrolling log, and renders to a 1024×768 `#canvas`.
+Open `http://localhost:8932/boot.html` in a **headed** browser (headless has no
+WebGL2). gstack `/browse --headed` — pass `--headed` on every command. The
+browse daemon occasionally restarts to a welcome tab; `goto` back to boot.html.
 
-## Key files (all changes guarded `#ifdef __EMSCRIPTEN__`, no behavior change off wasm)
+## Key files
 
-- `zh-web/cmake/wasm-deps.cmake` — the whole wasm dependency + link strategy
-- `zh-web/cmake/{sdl3,dx8,gamespy,config-build}.cmake` — per-dep Emscripten branches
-- `zh-web/wasm/d8web_bridge/d8web_bridge.cpp` — COM adapter: DXVK d3d8 vtables → d8web
-- `zh-web/wasm/{fontconfig_stub,wasm_compat.h}` — libc/font gap fills
-- `Core/Libraries/Source/WWVegas/WW3D2/dx8wrapper.cpp` — static bridge factory
-- `GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp` — RAF main loop
-- `GeneralsMD/Code/Main/SDL3Main.cpp` — no-Vulkan window path
-- `d8web/src/backends/webgl2/gl_backend.cpp` — the WebGL2 backend (+ debug harness)
+- `d8web/src/backends/webgl2/gl_backend.cpp` — cull mapping (applyFixedState),
+  debug counters, `D8WEB_DEBUG_CLEAR`/`D8WEB_DEBUG_NOCULL` probe hooks
+- `d8web/src/frontend/device.cpp` — CopyRects, format conversion, resources
+- `zh-web/wasm/boot.html` — test harness (staging list, log panel)
+- `zh-web/wasm/d8web_bridge/d8web_bridge.cpp` — COM adapter over d8web
+- `zh-web/Core/Libraries/Source/WWVegas/WW3D2/textureloader.cpp` — async
+  texture loading (the remaining bug lives here)
+- `zh-web/Core/Libraries/Source/WWVegas/WW3D2/render2dsentence.cpp` — FreeType
+  text pipeline + [FONT] diagnostics
 
 ## Commits
 
-- `d8web` (igroteka repo, master): through `f76c8ab` — bridge readiness
-- `zh-web` (fork, branch `igroteka-wasm`): through `4fe8edc` — boots to main menu
+- `d8web` (igroteka repo, master): `e80cbea` cull fix → `fa9ac0f` CopyRects
+- `zh-web` (fork, branch `igroteka-wasm`): `2bd18fb` fonts + boot.html tracked
 
 ## Immediate next step
 
-Disable culling unconditionally, rebuild, screenshot. That one test most likely
-turns the black canvas into the actual main menu.
+Synchronous background-queue drain in `TextureLoader::Update()` under
+`__EMSCRIPTEN__`, rebuild, reload — expect real menu art instead of magenta.
+Then stage `MapsZH.big` for the shell map.
