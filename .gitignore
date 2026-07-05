@@ -24,3 +24,6 @@ node_modules/
 .cache/
 compile_commands.json
 .gstack/
+
+# zh-web is a fork of GeneralsX with its own git history (Igroteka wasm branch)
+zh-web/
