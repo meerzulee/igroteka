@@ -98,8 +98,37 @@ browse daemon occasionally restarts to a welcome tab; `goto` back to boot.html.
 - `d8web` (igroteka repo, master): `e80cbea` cull fix → `fa9ac0f` CopyRects
 - `zh-web` (fork, branch `igroteka-wasm`): `2bd18fb` fonts + boot.html tracked
 
-## Immediate next step
+## Session 2 late update — shell map fully renders
 
-Synchronous background-queue drain in `TextureLoader::Update()` under
-`__EMSCRIPTEN__`, rebuild, reload — expect real menu art instead of magenta.
-Then stage `MapsZH.big` for the shell map.
+Magenta is fixed. Root cause was layered:
+1. ZH is an expansion: base-game archives hold much of its art. boot.html now
+   sets `CNC_GENERALS_PATH=/game-base` and stages base Textures/W3D/Terrain/
+   Window .bigs (plus TerrainZH + MapsZH for the shell map). ZH mounts first
+   and wins conflicts (zh-web commit d8897f8).
+2. No loader thread on wasm: background texture queue drained synchronously
+   in TextureLoader::Update() under __EMSCRIPTEN__ (same commit).
+3. d8web: DXT2/DXT4 aliased to DXT3/DXT5 (309 shell-map textures, drew white)
+   — commit 1573648.
+4. d8web: GL_TEXTURE_MAX_LEVEL clamped to actually-uploaded mip levels
+   (unuploaded levels sampled black → big black terrain triangles);
+   L8/A8L8 CPU-expanded to RGBA8 (no texture swizzle in WebGL2);
+   texture-coordinate transforms + TCI texgen implemented (cloud-shadow
+   layer sampled garbage → tile-aligned dark squares) — commit ad47644.
+
+The main menu now renders the full animated battle with correct terrain,
+vegetation, vehicles, effects, text.
+
+## Remaining polish items
+
+- Hard black triangular wedges on some cliff faces. Suspect W3D projected /
+  volume shadows: the engine may be drawing shadow geometry that needs
+  stencil-buffer setup we don't provide (check D3DRS_STENCIL* handling and
+  the W3D shadow render path). Could also be legit baked cliff shadows
+  exaggerated by a blend mode gap — compare against native GeneralsX.
+- Engine probes `UISABOTR_SKN..w3d`, then keeps appending `.w3d` (harmless
+  log spam, pre-existing name-mangling loop; also probes trstrtholecvr.tga
+  which this install genuinely lacks).
+- Occasional white particle rectangle near explosions (one texture/blend
+  combo still off).
+- fillCaps advertises programmable shaders so the engine probes .vso/.pso —
+  consider zeroing VertexShaderVersion/PixelShaderVersion in the bridge.
