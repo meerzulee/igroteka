@@ -1,0 +1,26 @@
+# Build output
+build/
+build-*/
+dist/
+*.wasm
+*.o
+*.a
+
+# Emscripten
+.emscripten_cache/
+em-cache/
+
+# Game assets — never commit copyrighted data
+*.big
+assets/
+game-data/
+
+# Session-local state (codex session ids etc.)
+.context/
+
+# Tooling
+node_modules/
+.DS_Store
+.cache/
+compile_commands.json
+.gstack/
