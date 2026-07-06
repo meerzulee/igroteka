@@ -38,6 +38,12 @@ export const ZH_OPTIONAL = {
   // Native in-game mouse cursors (Data/Cursors). Optional so installs made
   // before this bucket existed keep working — they just get the web cursor.
   cursors: ZH_CURSORS,
+  // Sound. Optional: ~900MB total, and the game is fully playable silent.
+  // ZH archives mount at /game, base-game ones at /game-base.
+  'audio-zh': ['AudioZH.big', 'AudioEnglishZH.big', 'SpeechZH.big',
+               'SpeechEnglishZH.big', 'MusicZH.big'],
+  'audio-base': ['Audio.big', 'AudioEnglish.big', 'Speech.big',
+                 'SpeechEnglish.big', 'Music.big'],
 };
 
 const norm = (name) => name.toLowerCase();
@@ -48,6 +54,8 @@ const scriptSet = new Set(ZH_MANIFEST.scripts.map(norm));
 const iconSet = new Set(ZH_OPTIONAL.icons.map(norm));
 const loadingSet = new Set(ZH_OPTIONAL.loading.map(norm));
 const cursorFileSet = new Set(ZH_OPTIONAL.cursors.map(norm));
+const audioZhSet = new Set(ZH_OPTIONAL['audio-zh'].map(norm));
+const audioBaseSet = new Set(ZH_OPTIONAL['audio-base'].map(norm));
 
 // Classify a filename (any path) into its OPFS bucket, or null if not needed.
 export function classify(path) {
@@ -58,6 +66,8 @@ export function classify(path) {
   if (iconSet.has(name)) return { dir: 'icons', name: canonical(name) };
   if (loadingSet.has(name)) return { dir: 'loading', name: canonical(name) };
   if (cursorFileSet.has(name)) return { dir: 'cursors', name: canonical(name) };
+  if (audioZhSet.has(name)) return { dir: 'audio-zh', name: canonical(name) };
+  if (audioBaseSet.has(name)) return { dir: 'audio-base', name: canonical(name) };
   return null;
 }
 
@@ -138,7 +148,8 @@ export async function opfsWrite(dir, name, blobOrBuffer, onProgress) {
 
 // Inventory of what's already imported. Returns {zh:[names], base:[], scripts:[]}
 export async function opfsInventory() {
-  const out = { zh: [], base: [], scripts: [], icons: [], loading: [], cursors: [] };
+  const out = { zh: [], base: [], scripts: [], icons: [], loading: [],
+                cursors: [], 'audio-zh': [], 'audio-base': [] };
   const root = await opfsRoot();
   for (const dir of Object.keys(out)) {
     try {

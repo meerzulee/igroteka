@@ -122,8 +122,8 @@
   </div>
 
 <script type="module">
-import { ZH_MANIFEST, ZH_CURSORS, opfsInventory, missingFiles, opfsReadFile,
-         loadingImageURL, nativeBarAtlas, drawNativeBar } from '../../igroteka.js?v=12';
+import { ZH_MANIFEST, ZH_CURSORS, ZH_OPTIONAL, opfsInventory, missingFiles,
+         opfsReadFile, loadingImageURL, nativeBarAtlas, drawNativeBar } from '../../igroteka.js?v=13';
 
 const msg = document.getElementById('msg');
 const fill = document.getElementById('fill');
@@ -253,7 +253,12 @@ const DEST = {
   // SDL3Mouse opens Data/Cursors/<Texture>.ani relative to the process CWD;
   // stage under / and mirror into /game in the copy loop to cover both.
   cursors: (n) => `/Data/Cursors/${n}`,
+  'audio-zh': (n) => `/game/${n}`,
+  'audio-base': (n) => `/game-base/${n}`,
 };
+
+// Optional buckets staged when present — game runs without them.
+const OPTIONAL_BUCKETS = { 'audio-zh': ZH_OPTIONAL['audio-zh'], 'audio-base': ZH_OPTIONAL['audio-base'] };
 
 async function sources() {
   if (DEV) {
@@ -273,6 +278,13 @@ async function sources() {
         const r = await fetch(`/gamedata/Cursors/${f}`);
         return r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
       }});
+    for (const [dir, names] of Object.entries(OPTIONAL_BUCKETS))
+      for (const f of names)
+        out.push({ dir, name: f, optional: true, load: async () => {
+          const url = dir === 'audio-base' ? `/gamedata/base-${f}` : `/gamedata/${f}`;
+          const r = await fetch(url);
+          return r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
+        }});
     return out;
   }
   let inv;
@@ -302,15 +314,18 @@ async function sources() {
         const file = await opfsReadFile(dir, f);
         return new Uint8Array(await file.arrayBuffer());
       }});
-  // Cursors are optional: absent on installs imported before the bucket
-  // existed — the game just keeps the web cursor until a re-import.
-  const haveCursors = new Set((inv.cursors || []).map((n) => n.toLowerCase()));
-  for (const f of ZH_CURSORS)
-    if (haveCursors.has(f.toLowerCase()))
-      out.push({ dir: 'cursors', name: f, optional: true, load: async () => {
-        const file = await opfsReadFile('cursors', f);
-        return new Uint8Array(await file.arrayBuffer());
-      }});
+  // Optional buckets: absent on installs imported before they existed —
+  // the game just runs without cursors/sound until a re-import.
+  const optionalDirs = { cursors: ZH_CURSORS, ...OPTIONAL_BUCKETS };
+  for (const [dir, names] of Object.entries(optionalDirs)) {
+    const have = new Set((inv[dir] || []).map((n) => n.toLowerCase()));
+    for (const f of names)
+      if (have.has(f.toLowerCase()))
+        out.push({ dir, name: f, optional: true, load: async () => {
+          const file = await opfsReadFile(dir, f);
+          return new Uint8Array(await file.arrayBuffer());
+        }});
+  }
   return out;
 }
 
