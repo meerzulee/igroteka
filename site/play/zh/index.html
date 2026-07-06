@@ -123,7 +123,7 @@
 
 <script type="module">
 import { ZH_MANIFEST, ZH_CURSORS, opfsInventory, missingFiles, opfsReadFile,
-         loadingImageURL, nativeBarAtlas, drawNativeBar } from '../../igroteka.js?v=11';
+         loadingImageURL, nativeBarAtlas, drawNativeBar } from '../../igroteka.js?v=12';
 
 const msg = document.getElementById('msg');
 const fill = document.getElementById('fill');
@@ -365,7 +365,7 @@ window.Module = {
   canvas: document.getElementById('canvas'),
   // Stable version tag so the 9MB wasm caches between runs — Date.now() here
   // forced a full re-download and recompile on every single load.
-  locateFile: (p) => p + '?v=11',
+  locateFile: (p) => p + '?v=12',
   arguments: ['-win'],
   print: logAndReveal,
   printErr: logAndReveal,
@@ -442,7 +442,7 @@ window.Module = {
 };
 
 const s = document.createElement('script');
-s.src = './GeneralsXZH.js?v=11';
+s.src = './GeneralsXZH.js?v=12';
 document.body.appendChild(s);
 </script>
 </body>
