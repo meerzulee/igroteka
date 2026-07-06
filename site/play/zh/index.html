@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <title>Zero Hour — Igroteka</title>
+  <link rel="stylesheet" href="../../xp.css">
   <style>
     html, body { margin:0; background:#000; color:#cfd2dd; overflow:hidden;
                  font: 13px/1.5 "Segoe UI", Roboto, sans-serif; }
@@ -61,6 +62,18 @@
       box-shadow:0 0 10px rgba(70,130,230,.6); transition:width .3s; }
     #msg { margin-top:10px; font-size:12px; color:#8fa9c8; min-height:16px;
       letter-spacing:1px; text-transform:uppercase; }
+    /* Until the game files are confirmed present, the loader is a bare black
+       screen — the branded art only appears for an actual boot. */
+    #loader.bare { background:#000; }
+    #loader.bare .center, #loader.bare .frame, #loader.bare #tip { display:none; }
+    /* XP crash dialog — shown over the canvas like a real game crash */
+    #crash { display:none; position:fixed; inset:0; z-index:10;
+             align-items:center; justify-content:center; }
+    #crash .window { width:420px; box-shadow:4px 4px 16px rgba(0,0,0,.55); }
+    #crash .body { display:flex; gap:14px; padding:16px 14px;
+             align-items:flex-start; background:#fff; font-size:12px;
+             line-height:1.5; color:#000; }
+    #crash .btns { display:flex; justify-content:center; gap:8px; padding:10px; }
     #tip { position:absolute; bottom:52px; left:0; right:0; text-align:center;
       color:#7d93b2; font-size:13px; font-style:italic; padding:0 40px; }
     #tip b { color:#c98b3b; font-style:normal; letter-spacing:1px; }
@@ -68,7 +81,7 @@
   </style>
 </head>
 <body>
-  <div id="loader">
+  <div id="loader" class="bare">
     <div class="frame">
       <span class="corner tl"></span><span class="corner tr"></span>
       <span class="corner bl"></span><span class="corner br"></span>
@@ -90,6 +103,22 @@
   <div id="stage">
     <canvas id="canvas" width="1024" height="768" oncontextmenu="event.preventDefault()"></canvas>
   </div>
+  <div id="crash">
+    <div class="window">
+      <div class="title-bar">
+        <div class="title-bar-text">C&amp;C Generals: Zero Hour</div>
+        <div class="title-bar-controls"><button aria-label="Close" id="crashX"></button></div>
+      </div>
+      <div class="body">
+        <svg width="32" height="32" viewBox="0 0 32 32" style="flex:0 0 32px" aria-hidden="true">
+          <circle cx="16" cy="16" r="15" fill="#d83a2e"/>
+          <path d="M10 10 L22 22 M22 10 L10 22" stroke="#fff" stroke-width="4" stroke-linecap="round"/>
+        </svg>
+        <div id="crashMsg"></div>
+      </div>
+      <div class="btns" id="crashBtns"></div>
+    </div>
+  </div>
 
 <script type="module">
 import { ZH_MANIFEST, opfsInventory, missingFiles, opfsReadFile, loadingImageURL,
@@ -110,6 +139,22 @@ const bar = { set value(v) {
   }
 } };
 
+// XP crash dialog over the canvas — like a real game crash on the desktop.
+function showCrashDialog(html, opts = {}) {
+  document.getElementById('crashMsg').innerHTML = html;
+  const btns = document.getElementById('crashBtns');
+  btns.innerHTML = '';
+  const add = (label, fn) => {
+    const b = document.createElement('button');
+    b.textContent = label; b.onclick = fn; btns.appendChild(b);
+  };
+  if (opts.setup) add('Run Setup', () => location.href = '../../?run=setup');
+  if (opts.reload) add('Reload', () => location.reload());
+  add('Close', () => location.href = '../../');
+  document.getElementById('crashX').onclick = () => location.href = '../../';
+  document.getElementById('crash').style.display = 'flex';
+}
+
 // The game's own gold loading bar, sliced live from the user's EnglishZH.big.
 // The 148x16 (800x600) widget rect scales with the window like the engine
 // scales it; insets and 3px segments stay absolute (W3DProgressBar.cpp).
@@ -122,7 +167,7 @@ function sizeNativeBar() {
     drawNativeBar(natCtx, natAtlas, lastPct, c.width, c.height);
   }
 }
-(async () => {
+async function initNativeBar() {
   const src = DEV ? await fetch('/gamedata/EnglishZH.big').then(r => r.ok ? r.blob() : null).catch(() => null) : null;
   natAtlas = await nativeBarAtlas(src);
   if (!natAtlas) return;
@@ -130,10 +175,10 @@ function sizeNativeBar() {
   document.body.classList.add('native');
   sizeNativeBar();
   addEventListener('resize', sizeNativeBar);
-})();
+}
 
 // Use the game's own loading splash as the backdrop if the install had it.
-(async () => {
+async function initSplash() {
   let url = DEV ? '/gamedata/Install_Final.bmp' : await loadingImageURL();
   if (!url) return;
   const img = new Image();
@@ -145,7 +190,7 @@ function sizeNativeBar() {
     const wm = document.getElementById('wm'); if (wm) wm.style.display = 'none';
   };
   img.src = url;
-})();
+}
 
 const TIPS = [
   'Capture oil derricks for a steady stream of extra cash.',
@@ -170,7 +215,6 @@ function hideLoader() {
   loader.classList.add('hidden');
   setTimeout(() => { loader.style.display = 'none'; }, 700);
 }
-startTips();
 
 // dir -> wasm FS destination
 const DEST = {
@@ -197,9 +241,11 @@ async function sources() {
   const inv = await opfsInventory();
   const missing = missingFiles(inv);
   if (missing.length) {
-    // Bounce back to the desktop — it shows the "files not found" alert,
-    // like a game exe erroring out to Windows.
-    location.replace('../../?err=zh-files-missing');
+    localStorage.removeItem('zh-installed');  // install claim is stale
+    showCrashDialog(
+      `Zero Hour could not start because the game files were not found on
+       this computer.<br><br>Run <b>Setup — C&amp;C Generals: Zero Hour</b>
+       to bring your game files back, then try again.`, { setup: true });
     throw new Error('assets missing');
   }
   const out = [];
@@ -215,6 +261,12 @@ async function sources() {
 let files;
 try { files = await sources(); } catch (e) { throw e; }
 
+// Files confirmed — only now show the branded loading screen.
+loader.classList.remove('bare');
+startTips();
+initSplash();
+initNativeBar();
+
 // Reveal the canvas the moment the engine actually draws: d8web logs a
 // "[d8web] draw #N" line every 500 draw calls, and the first one lands while
 // the engine paints its own load screen. Pixel-polling can't do this —
@@ -225,12 +277,17 @@ const logAndReveal = (t) => {
     if (!revealed && t.startsWith('[d8web] draw')) hideLoader();
     // Engine died before it could draw — say so instead of a silent black
     // canvas. Brave's fingerprint shield is the common WebGL2 blocker.
-    if (t.includes('WebGL2 context creation failed') || t.startsWith('FATAL ERROR')) {
-      revealed = false;
-      loader.style.display = '';
-      loader.classList.remove('hidden');
-      msg.textContent = 'Graphics failed to start — this browser blocked WebGL2. ' +
-        'In Brave: click the Shields icon and turn off fingerprint protection for this site, then reload.';
+    if (t.includes('WebGL2 context creation failed')) {
+      showCrashDialog(
+        `Zero Hour could not start because the browser blocked WebGL2
+         (graphics).<br><br>In Brave: click the Shields icon in the address
+         bar and turn off fingerprint protection for this site, then reload.`,
+        { reload: true });
+    } else if (t.startsWith('FATAL ERROR')) {
+      showCrashDialog(
+        `Zero Hour has encountered a problem and needs to close.
+         We are sorry for the inconvenience.<br><br>
+         <span style="color:#555">${t}</span>`, { reload: true });
     }
   }
   console.log(t);
@@ -256,7 +313,12 @@ window.Module = {
   arguments: ['-win'],
   print: logAndReveal,
   printErr: logAndReveal,
-  onAbort: (w) => { msg.textContent = 'Engine aborted: ' + w; loader.classList.remove('hidden'); },
+  onAbort: (w) => {
+    showCrashDialog(
+      `Zero Hour has encountered a problem and needs to close.
+       We are sorry for the inconvenience.<br><br>
+       <span style="color:#555">${w}</span>`, { reload: true });
+  },
   onRuntimeInitialized: () => {
     msg.textContent = 'Loading the shell…';
     // The reveal happens on the first '[d8web] draw' log (logAndReveal).

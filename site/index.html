@@ -186,7 +186,7 @@
 
 <script type="module">
 import { classify, opfsWrite, opfsInventory, missingFiles, requestPersistence,
-         zipEntries, gameIconURL, opfsReadFile } from './igroteka.js?v=6';
+         zipEntries, gameIconURL, opfsReadFile, opfsWritable } from './igroteka.js?v=9';
 
 // ---------- tiny window manager ----------
 const desktop = document.getElementById('desktop');
@@ -349,6 +349,16 @@ async function openSetup() {
       body.querySelector('#back').onclick = stepSource;
       return;
     }
+    const storageError = (why) => {
+      render(`<h3>Setup cannot continue</h3>
+        <p style="display:flex;gap:10px;align-items:flex-start">
+        <svg width="26" height="26" viewBox="0 0 32 32" style="flex:0 0 26px" aria-hidden="true">
+          <circle cx="16" cy="16" r="15" fill="#d83a2e"/>
+          <path d="M10 10 L22 22 M22 10 L10 22" stroke="#fff" stroke-width="4" stroke-linecap="round"/>
+        </svg><span>${why}</span></p>`,
+        `<button id="back">&lt; Back</button>`);
+      body.querySelector('#back').onclick = stepSource;
+    };
     render(`<h3>Installing…</h3>
       <p>Copying game files into browser storage. Please wait.</p>
       <progress id="p" max="100" value="0"></progress>
@@ -356,8 +366,15 @@ async function openSetup() {
     const list = stepEl.querySelector('#list');
     const p = stepEl.querySelector('#p');
     await requestPersistence();
+    if (!await opfsWritable()) {
+      storageError(`This browser window can't keep the game files: persistent
+        storage is blocked. Private Browsing windows do this — open Igroteka
+        in a regular window and run Setup again.`);
+      return;
+    }
     const inv = await opfsInventory();
     let done = 0;
+    try {
     for (const f of files) {
       const c = classify(f.rel);
       const row = document.createElement('div');
@@ -379,6 +396,15 @@ async function openSetup() {
       p.value = (done / total) * 100;
       row.lastChild.textContent = skipped ? '✓ (kept)' : '✓';
       row.lastChild.className = 'ok';
+    }
+    } catch (e) {
+      storageError(e && e.name === 'QuotaExceededError'
+        ? `The browser ran out of storage space for the game files.
+           Free up disk space, or check this site's storage allowance,
+           then run Setup again.`
+        : `Copying failed: ${e && e.message ? e.message : e}. Reload the
+           page and run Setup again.`);
+      return;
     }
     stepFinish();
   };
@@ -493,10 +519,17 @@ function showFilesMissingError() {
   body.querySelector('#errSetup').onclick = () => { close(); openSetup(); };
   body.querySelector('#errClose').onclick = close;
 }
-if (new URLSearchParams(location.search).get('err') === 'zh-files-missing') {
-  history.replaceState(null, '', location.pathname);  // no re-alert on reload
-  localStorage.removeItem('zh-installed');  // install claim is stale — files gone
-  showFilesMissingError();
+{
+  const q = new URLSearchParams(location.search);
+  if (q.get('err') === 'zh-files-missing') {
+    history.replaceState(null, '', location.pathname);  // no re-alert on reload
+    localStorage.removeItem('zh-installed');  // install claim is stale — files gone
+    showFilesMissingError();
+  } else if (q.get('run') === 'setup') {
+    // "Run Setup" from the game's crash dialog lands here
+    history.replaceState(null, '', location.pathname);
+    openSetup();
+  }
 }
 
 // ---------- start menu + clock ----------

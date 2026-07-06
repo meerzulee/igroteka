@@ -134,6 +134,24 @@ export async function requestPersistence() {
   return false;
 }
 
+// Probe that OPFS actually accepts writes before a multi-GB import. Safari
+// Private Browsing (and some locked-down profiles) block or stall persistent
+// storage — without this the copy loop hangs with no error. The 5s race
+// catches the stall case, not just the reject case.
+export async function opfsWritable() {
+  const probe = (async () => {
+    const root = await opfsRoot();
+    const fh = await root.getFileHandle('.igroteka-probe', { create: true });
+    const w = await fh.createWritable();
+    await w.write(new Uint8Array([1]));
+    await w.close();
+    await root.removeEntry('.igroteka-probe');
+    return true;
+  })();
+  const timeout = new Promise((res) => setTimeout(() => res(false), 5000));
+  try { return await Promise.race([probe, timeout]); } catch { return false; }
+}
+
 // ---- Native loading-bar art -------------------------------------------------
 // The game's own loading bar lives in EnglishZH.big (already imported for
 // play) as slices of one UI atlas. We read just the BIG index plus that one

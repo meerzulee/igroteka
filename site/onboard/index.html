@@ -85,7 +85,7 @@
 
 <script type="module">
 import { classify, opfsWrite, opfsInventory, missingFiles, requestPersistence,
-         zipEntries, ZH_MANIFEST } from '../igroteka.js?v=7';
+         zipEntries, ZH_MANIFEST, opfsWritable } from '../igroteka.js?v=9';
 
 const statusEl = document.getElementById('status');
 const bar = document.getElementById('bar');
@@ -114,6 +114,15 @@ async function importEntries(entries, total) {
   bar.style.display = 'block';
   let doneBytes = 0;
   await requestPersistence();
+  if (!await opfsWritable()) {
+    bar.style.display = 'none';
+    statusEl.innerHTML = `<div class="card"><h2>Storage blocked</h2>
+      <p>This browser window can't keep the game files: persistent storage is
+      blocked. Private Browsing windows do this — open Igroteka in a regular
+      window and try again.</p></div>`;
+    return;
+  }
+  try {
   for await (const e of entries) {
     const c = classify(e.relPath);
     if (!c) { doneBytes += e.size || 0; continue; }
@@ -124,6 +133,14 @@ async function importEntries(entries, total) {
     doneBytes += e.size || blob.size;
     bar.value = total ? (doneBytes / total) * 100 : 0;
     await refresh();
+  }
+  } catch (e) {
+    bar.style.display = 'none';
+    statusEl.innerHTML = `<div class="card"><h2>Import failed</h2>
+      <p>${e && e.name === 'QuotaExceededError'
+        ? 'The browser ran out of storage space for the game files. Free up disk space and try again.'
+        : 'Copying failed: ' + (e && e.message ? e.message : e)}</p></div>`;
+    return;
   }
   bar.style.display = 'none';
   await refresh();
