@@ -53,6 +53,12 @@
     .taskBtn { height: 22px; min-width: 140px; text-align: left; font-size: 11px; }
     #clock { color: #fff; font-size: 11px; padding: 0 10px; border-left: 1px solid rgba(255,255,255,.3);
              background: linear-gradient(#1d9ede, #1372ba); height: 100%; display:flex; align-items:center; }
+    /* Fullscreen toggle lives in the tray, XP style */
+    #trayFs { color: #fff; font-size: 14px; padding: 0 8px; border-left: 1px solid rgba(255,255,255,.3);
+              background: linear-gradient(#1d9ede, #1372ba); height: 100%; display:flex; align-items:center;
+              cursor: pointer; user-select: none; margin-left: auto; }
+    #trayFs:hover { background: linear-gradient(#2fb0ee, #1e82ca); }
+    #tasks + #trayFs { margin-left: 0; }
     #startMenu {
       position: absolute; bottom: 30px; left: 0; width: 400px; display: none;
       border: 1px solid #0f2f7c; border-bottom: 0;
@@ -183,14 +189,30 @@
   <div id="taskbar">
     <button id="startBtn">игротека</button>
     <div id="tasks"></div>
+    <div id="trayFs" title="Fullscreen">⛶</div>
     <div id="clock"></div>
   </div>
 
 <script type="module">
 import { classify, opfsWrite, opfsInventory, missingFiles, requestPersistence,
          zipEntries, gameIconURL, opfsReadFile, opfsWritable, dedupeImports,
-         setGameFavicon } from './igroteka.js?v=14';
+         setGameFavicon, SITE_VERSION, ENGINE_BUILD } from './igroteka.js?v=15';
 setGameFavicon();
+
+// Fullscreen toggle in the taskbar tray. documentElement keeps every XP
+// window inside the fullscreened element.
+const trayFs = document.getElementById('trayFs');
+if (!document.fullscreenEnabled && !document.webkitFullscreenEnabled) {
+  trayFs.style.display = 'none';
+} else {
+  trayFs.addEventListener('click', () => {
+    const el = document.documentElement;
+    if (document.fullscreenElement || document.webkitFullscreenElement)
+      (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    else
+      (el.requestFullscreen || el.webkitRequestFullscreen).call(el, { navigationUI: 'hide' });
+  });
+}
 
 // ---------- tiny window manager ----------
 const desktop = document.getElementById('desktop');
@@ -266,6 +288,8 @@ function openAbout() {
   if (!body) return;
   body.innerHTML = `<div style="padding:14px;font-size:12px">
     <p><b>Igroteka</b> — the 2000s gaming café, in your browser.</p>
+    <p style="color:#555">Version ${SITE_VERSION} &middot;
+       Dvijoke engine build ${ENGINE_BUILD} (WebGL2)</p>
     <p>Real native game ports (WebAssembly, Dvijoke engine), no streaming.
        Your game files stay on your device — Igroteka never uploads or hosts them.</p>
     <p>Made by Meerzulee</p>

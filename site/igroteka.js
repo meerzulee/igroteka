@@ -1,6 +1,12 @@
 // Igroteka shared: asset manifest, OPFS store, zip extraction.
 // Rule: game bytes flow device/cloud -> browser OPFS. Never through our servers.
 
+// Versions — single source of truth. The About window shows both; the play
+// page cache-busts engine fetches with ENGINE_BUILD (bump it whenever new
+// GeneralsXZH.js/.wasm binaries are staged, or browsers replay the old ones).
+export const SITE_VERSION = '0.1.0';
+export const ENGINE_BUILD = 17;
+
 export const ZH_MANIFEST = {
   // Zero Hour expansion archives (from the ZH install dir)
   zh: [

@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <title>Zero Hour — Igroteka</title>
@@ -153,7 +154,7 @@
 <script type="module">
 import { ZH_MANIFEST, ZH_CURSORS, ZH_OPTIONAL, opfsInventory, missingFiles,
          opfsReadFile, loadingImageURL, nativeBarAtlas, drawNativeBar,
-         setGameFavicon } from '../../igroteka.js?v=14';
+         setGameFavicon, ENGINE_BUILD } from '../../igroteka.js?v=15';
 setGameFavicon();
 
 // Fullscreen toggle. documentElement (not the canvas) so overlays like the
@@ -450,7 +451,7 @@ window.Module = {
   canvas: document.getElementById('canvas'),
   // Stable version tag so the 9MB wasm caches between runs — Date.now() here
   // forced a full re-download and recompile on every single load.
-  locateFile: (p) => p + '?v=17',
+  locateFile: (p) => p + '?v=' + ENGINE_BUILD,
   arguments: ['-win'],
   print: logAndReveal,
   printErr: logAndReveal,
@@ -527,7 +528,7 @@ window.Module = {
 };
 
 const s = document.createElement('script');
-s.src = './GeneralsXZH.js?v=17';
+s.src = './GeneralsXZH.js?v=' + ENGINE_BUILD;
 document.body.appendChild(s);
 </script>
 </body>
