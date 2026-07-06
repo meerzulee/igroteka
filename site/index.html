@@ -5,6 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Igroteka</title>
   <link rel="stylesheet" href="xp.css">
+  <script>
+    // surface boot errors instead of a silently dead desktop
+    window.__bootErr = null;
+    addEventListener('error', (e) => { window.__bootErr = (e.error && e.error.stack) || e.message; });
+    addEventListener('unhandledrejection', (e) => { window.__bootErr = 'rejection: ' + e.reason; });
+  </script>
   <style>
     /* Original XP-inspired theme. No Microsoft assets: wallpaper is CSS art,
        icons are emoji/SVG, styles come from XP.css (MIT). */
@@ -74,6 +80,7 @@
     <header>Igroteka <span style="font-weight:normal">игротека</span></header>
     <div class="item" data-open="setup">💿 Install C&amp;C Generals: Zero Hour</div>
     <div class="item" data-open="zh" style="display:none" id="smPlay">🎖️ C&amp;C Generals: Zero Hour</div>
+    <div class="item" data-open="uninstall" style="display:none" id="smUninstall">🗑️ Uninstall C&amp;C Generals: Zero Hour</div>
     <div class="item" data-open="about">📄 About Igroteka</div>
   </div>
 
@@ -85,7 +92,7 @@
 
 <script type="module">
 import { classify, opfsWrite, opfsInventory, missingFiles, requestPersistence,
-         zipEntries, gameIconURL } from './igroteka.js';
+         zipEntries, gameIconURL } from './igroteka.js?v=3';
 
 // ---------- tiny window manager ----------
 const desktop = document.getElementById('desktop');
@@ -291,6 +298,42 @@ async function openSetup() {
   stepWelcome();
 }
 
+async function openUninstall() {
+  const body = makeWindow('uninstall', 'Uninstall — C&C Generals: Zero Hour', 520);
+  if (!body) return;
+  const render = (html, btns) => {
+    body.innerHTML = `<div class="wizardStep"><div class="wizardArt">🗑️</div>
+      <div class="wizardMain">${html}</div></div><div class="wizardBtns">${btns}</div>`;
+  };
+  render(`<h3>Uninstall Zero Hour</h3>
+    <p>This removes the game files from your browser's private storage on this
+    device. Your original Steam installation is not touched.</p>
+    <p>You can reinstall any time from the desktop Setup icon.</p>`,
+    `<button id="cancel">Cancel</button><button id="go">Uninstall</button>`);
+  body.querySelector('#cancel').onclick = () =>
+    body.closest('.window').querySelector('[aria-label="Close"]').click();
+  body.querySelector('#go').onclick = async () => {
+    render(`<h3>Removing…</h3><progress id="p" max="100" value="10"></progress>`, ``);
+    const p = body.querySelector('#p');
+    const root = await navigator.storage.getDirectory();
+    const dirs = ['zh', 'base', 'scripts', 'icons'];
+    for (let i = 0; i < dirs.length; i++) {
+      try { await root.removeEntry(dirs[i], { recursive: true }); } catch { /* absent */ }
+      p.value = 10 + ((i + 1) / dirs.length) * 90;
+    }
+    localStorage.removeItem('zh-installed');
+    const icon = document.getElementById('zhIcon');
+    if (icon) icon.remove();
+    document.getElementById('smPlay').style.display = 'none';
+    document.getElementById('smUninstall').style.display = 'none';
+    render(`<h3>Uninstalled ✓</h3>
+      <p><b>C&amp;C Generals: Zero Hour</b> has been removed from this browser.</p>`,
+      `<button id="closeU">Finish</button>`);
+    body.querySelector('#closeU').onclick = () =>
+      body.closest('.window').querySelector('[aria-label="Close"]').click();
+  };
+}
+
 // ---------- desktop layout ----------
 addIcon('setup', '💿', 'Install C&C Generals Zero Hour', 24, 24, openSetup);
 addIcon('about', '📄', 'About Igroteka', 24, 130, openAbout);
@@ -303,6 +346,7 @@ async function placeGameIcon() {
   const el = addIcon('zh', glyph, 'C&C Generals Zero Hour', 24, 236, () => location.href = 'play/zh/');
   el.id = 'zhIcon';
   document.getElementById('smPlay').style.display = '';
+  document.getElementById('smUninstall').style.display = '';
 }
 if (localStorage.getItem('zh-installed')) placeGameIcon();
 
@@ -322,6 +366,7 @@ startMenu.addEventListener('click', (e) => {
   if (item.dataset.open === 'setup') openSetup();
   if (item.dataset.open === 'about') openAbout();
   if (item.dataset.open === 'zh') location.href = 'play/zh/';
+  if (item.dataset.open === 'uninstall') openUninstall();
 });
 
 const clock = document.getElementById('clock');
