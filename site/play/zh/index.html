@@ -72,7 +72,7 @@
     #crash .window { width:420px; box-shadow:4px 4px 16px rgba(0,0,0,.55); }
     #crash .body { display:flex; gap:14px; padding:16px 14px;
              align-items:flex-start; background:#fff; font-size:12px;
-             line-height:1.5; color:#000; }
+             line-height:1.5; color:#000; letter-spacing:.5px; }
     #crash .btns { display:flex; justify-content:center; gap:8px; padding:10px; }
     #tip { position:absolute; bottom:52px; left:0; right:0; text-align:center;
       color:#7d93b2; font-size:13px; font-style:italic; padding:0 40px; }
@@ -127,6 +127,16 @@ import { ZH_MANIFEST, opfsInventory, missingFiles, opfsReadFile, loadingImageURL
 const msg = document.getElementById('msg');
 const fill = document.getElementById('fill');
 const loader = document.getElementById('loader');
+
+// Backstop: never leave the player staring at a silent black page.
+addEventListener('unhandledrejection', (e) => {
+  const known = String(e.reason || '');
+  if (known.includes('assets missing') || known.includes('storage blocked')) return;
+  showCrashDialog(
+    `Zero Hour has encountered a problem and needs to close.
+     We are sorry for the inconvenience.<br><br>
+     <span style="color:#555">${known.slice(0, 300)}</span>`, { reload: true });
+});
 const tipEl = document.getElementById('tip');
 const DEV = new URLSearchParams(location.search).get('dev') === '1';
 let natCtx = null, natAtlas = null, lastPct = 0;
@@ -238,7 +248,17 @@ async function sources() {
         }});
     return out;
   }
-  const inv = await opfsInventory();
+  let inv;
+  try {
+    inv = await opfsInventory();
+  } catch {
+    // Safari Private Browsing rejects navigator.storage.getDirectory() itself
+    showCrashDialog(
+      `Zero Hour cannot run in this browser window: access to browser storage
+       is blocked.<br><br>Private Browsing windows do this — open Igroteka in
+       a regular window instead.`);
+    throw new Error('storage blocked');
+  }
   const missing = missingFiles(inv);
   if (missing.length) {
     localStorage.removeItem('zh-installed');  // install claim is stale

@@ -34,7 +34,9 @@
     .icon.selected { background: rgba(49,106,197,.45); outline: 1px dotted #fff; }
     .window { position: absolute; min-width: 380px; box-shadow: 4px 4px 16px rgba(0,0,0,.45); }
     .window .title-bar { cursor: default; }
-    .window-body { background: #ece9d8; }
+    /* The pixelated MS Sans face sets tight — a little tracking and taller
+       lines keep body text readable at 12px. */
+    .window-body { background: #ece9d8; letter-spacing: .5px; line-height: 1.5; }
     #taskbar {
       position: absolute; left: 0; right: 0; bottom: 0; height: 30px;
       background: linear-gradient(#3168d5 0%, #4993e6 6%, #2b63cf 50%, #1941a5 100%);
@@ -519,6 +521,33 @@ function showFilesMissingError() {
   body.querySelector('#errSetup').onclick = () => { close(); openSetup(); };
   body.querySelector('#errClose').onclick = close;
 }
+// Persistent (closable) heads-up when storage is blocked — Private Browsing.
+// A warning, not a gate: the user may still try Setup; it will explain again.
+(async () => {
+  if (await opfsWritable()) return;
+  const w = document.createElement('div');
+  w.className = 'window';
+  w.style.cssText = 'position:fixed; right:12px; bottom:44px; width:320px; z-index:900;';
+  w.innerHTML = `
+    <div class="title-bar">
+      <div class="title-bar-text">Igroteka</div>
+      <div class="title-bar-controls"><button aria-label="Close"></button></div>
+    </div>
+    <div class="window-body" style="margin:0; display:flex; gap:10px; padding:10px 12px; align-items:flex-start">
+      <svg width="30" height="30" viewBox="0 0 32 32" style="flex:0 0 30px" aria-hidden="true">
+        <path d="M16 3 L30 28 H2 Z" fill="#f8d21c" stroke="#8a7500" stroke-width="1.5" stroke-linejoin="round"/>
+        <rect x="14.7" y="11" width="2.6" height="9" rx="1" fill="#000"/>
+        <circle cx="16" cy="24" r="1.7" fill="#000"/>
+      </svg>
+      <div style="font-size:12px">This looks like a Private Browsing window —
+        the game can't be installed here for keeps: files are wiped when the
+        window closes. You can still try, or open Igroteka in a regular
+        window for a lasting install.</div>
+    </div>`;
+  w.querySelector('[aria-label="Close"]').onclick = () => w.remove();
+  document.getElementById('desktop').appendChild(w);
+})();
+
 {
   const q = new URLSearchParams(location.search);
   if (q.get('err') === 'zh-files-missing') {
