@@ -35,10 +35,12 @@ API calls. Adding WebGPU later = new WGSL emitter + new translator, nothing else
 
 - **Igroteka** (игротека) — the platform: the café people visit. Site, lobbies,
   profiles, WebRTC multiplayer.
-- **Dvigatel** (двигатель, "engine") — the engine runtime: everything that makes a
-  W3D/SAGE game run in a tab (engine fork + COM bridge + boot loader + d8web).
-  Released as `Dvigatel <version> (<backend>)`, e.g. `Dvigatel 0.4 (WebGL2)`,
-  later `Dvigatel 1.x (WebGPU)`. One engine version, N backend builds.
+- **Dvijoke** (движок, "game engine" in Russian gamedev slang) — the engine
+  runtime: everything that makes a W3D/SAGE game run in a tab (engine fork +
+  COM bridge + boot loader + d8web). Slavic readers see движок; Western
+  readers get the joke — both readings intended. Released as
+  `Dvijoke <version> (<backend>)`, e.g. `Dvijoke 0.4 (WebGL2)`, later
+  `Dvijoke 1.x (WebGPU)`. One engine version, N backend builds.
 - **d8web** — the graphics translation library inside Dvigatel. Backends
   (WebGL2 / WebGPU) are its build variants behind the `IBackend` seam.
 
@@ -47,7 +49,7 @@ API calls. Adding WebGPU later = new WGSL emitter + new translator, nothing else
 | Component | License | Purpose |
 |---|---|---|
 | `d8web` | MIT | D3D8 → WebGL2/WebGPU translation layer (builds on [d3d9-webgl](https://github.com/LostMyCode/d3d9-webgl), MIT) |
-| `zh-web` | GPL v3 | [GeneralsGameCode](https://github.com/TheSuperHackers/GeneralsGameCode) fork + Emscripten toolchain — together with `d8web` this is **Dvigatel** |
+| `zh-web` | GPL v3 | [GeneralsGameCode](https://github.com/TheSuperHackers/GeneralsGameCode) fork + Emscripten toolchain — together with `d8web` this is **Dvijoke** |
 | `cafe` | MIT | Lobby web app, WebRTC signaling, OPFS asset onboarding |
 | `site` | — | Landing page, docs, demos |
 
