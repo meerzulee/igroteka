@@ -17,6 +17,9 @@ export const ZH_MANIFEST = {
 // The game's own icon comes from the USER'S copy — we never ship EA art.
 export const ZH_OPTIONAL = {
   icons: ['GeneralsZH.ico', 'Generals.ico'],
+  // The native install/loading splash — a plain 800x600 BMP the browser can
+  // display directly. From the user's own files (never shipped by us).
+  loading: ['Install_Final.bmp'],
 };
 
 const norm = (name) => name.toLowerCase();
@@ -25,6 +28,7 @@ const zhSet = new Set(ZH_MANIFEST.zh.map(norm));
 const baseSet = new Set(ZH_MANIFEST.base.map(norm));
 const scriptSet = new Set(ZH_MANIFEST.scripts.map(norm));
 const iconSet = new Set(ZH_OPTIONAL.icons.map(norm));
+const loadingSet = new Set(ZH_OPTIONAL.loading.map(norm));
 
 // Classify a filename (any path) into its OPFS bucket, or null if not needed.
 export function classify(path) {
@@ -33,6 +37,7 @@ export function classify(path) {
   if (baseSet.has(name)) return { dir: 'base', name: canonical(name) };
   if (scriptSet.has(name)) return { dir: 'scripts', name: canonical(name) };
   if (iconSet.has(name)) return { dir: 'icons', name: canonical(name) };
+  if (loadingSet.has(name)) return { dir: 'loading', name: canonical(name) };
   return null;
 }
 
@@ -41,6 +46,17 @@ function canonical(lower) {
     for (const f of list) if (norm(f) === lower) return f;
   }
   return lower;
+}
+
+// Blob URL for the native loading splash if the user's install provided one.
+export async function loadingImageURL() {
+  for (const name of ZH_OPTIONAL.loading) {
+    try {
+      const f = await opfsReadFile('loading', name);
+      return URL.createObjectURL(f);
+    } catch { /* try next */ }
+  }
+  return null;
 }
 
 // Blob URL for the game's own icon if the user's install provided one.
@@ -82,7 +98,7 @@ export async function opfsWrite(dir, name, blobOrBuffer, onProgress) {
 
 // Inventory of what's already imported. Returns {zh:[names], base:[], scripts:[]}
 export async function opfsInventory() {
-  const out = { zh: [], base: [], scripts: [], icons: [] };
+  const out = { zh: [], base: [], scripts: [], icons: [], loading: [] };
   const root = await opfsRoot();
   for (const dir of Object.keys(out)) {
     try {
