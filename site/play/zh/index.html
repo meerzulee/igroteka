@@ -36,6 +36,18 @@
       text-shadow:0 2px 10px rgba(60,110,180,.5); }
     #wm .c { font-size:16px; color:#c98b3b; letter-spacing:10px; margin-top:4px; }
     #bwrap { width:460px; max-width:70vw; }
+    /* Native ZH bar: 148x16 at 800x600 -> keep the game's proportions.
+       Drawn from the user's own UI atlas; hidden until the art is ready. */
+    /* Sized in JS like the engine sizes the widget: the 148x16 (at 800x600)
+       rect scales with the viewport, while segment width and insets stay in
+       absolute pixels — that's what gives the native thin-frame look. */
+    #natbar { display:none; width:auto; height:auto; max-width:none;
+              background:none; margin:0 auto; }
+    body.native #bwrap { position:fixed; bottom:4%; left:50%;
+              transform:translateX(-50%); z-index:6; }
+    body.native #track { display:none; }
+    body.native #natbar { display:block; }
+    body.native #tip { bottom:120px; }
     #track { height:16px; border:1px solid rgba(120,170,240,.55); padding:2px;
       background:rgba(10,20,40,.6); border-radius:2px; overflow:hidden; }
     #fill { height:100%; width:0; border-radius:1px;
@@ -63,6 +75,7 @@
         <div class="c">ZERO HOUR</div>
       </div>
       <div id="bwrap">
+        <canvas id="natbar" width="148" height="16"></canvas>
         <div id="track"><div id="fill"></div></div>
         <div id="msg">Checking your game files…</div>
       </div>
@@ -74,14 +87,45 @@
   </div>
 
 <script type="module">
-import { ZH_MANIFEST, opfsInventory, missingFiles, opfsReadFile, loadingImageURL } from '../../igroteka.js?v=7';
+import { ZH_MANIFEST, opfsInventory, missingFiles, opfsReadFile, loadingImageURL,
+         nativeBarAtlas, drawNativeBar } from '../../igroteka.js?v=8';
 
 const msg = document.getElementById('msg');
 const fill = document.getElementById('fill');
 const loader = document.getElementById('loader');
 const tipEl = document.getElementById('tip');
 const DEV = new URLSearchParams(location.search).get('dev') === '1';
-const bar = { set value(v) { fill.style.width = Math.max(0, Math.min(100, v)) + '%'; } };
+let natCtx = null, natAtlas = null, lastPct = 0;
+const bar = { set value(v) {
+  lastPct = v;
+  fill.style.width = Math.max(0, Math.min(100, v)) + '%';
+  if (natCtx) {
+    const c = natCtx.canvas;
+    drawNativeBar(natCtx, natAtlas, v, c.width, c.height);
+  }
+} };
+
+// The game's own gold loading bar, sliced live from the user's EnglishZH.big.
+// The 148x16 (800x600) widget rect scales with the window like the engine
+// scales it; insets and 3px segments stay absolute (W3DProgressBar.cpp).
+function sizeNativeBar() {
+  const c = document.getElementById('natbar');
+  c.width = Math.max(148, Math.round(148 * innerWidth / 800));
+  c.height = Math.max(16, Math.round(16 * innerHeight / 600));
+  if (natCtx && natAtlas) {
+    natCtx.imageSmoothingEnabled = false;
+    drawNativeBar(natCtx, natAtlas, lastPct, c.width, c.height);
+  }
+}
+(async () => {
+  const src = DEV ? await fetch('/gamedata/EnglishZH.big').then(r => r.ok ? r.blob() : null).catch(() => null) : null;
+  natAtlas = await nativeBarAtlas(src);
+  if (!natAtlas) return;
+  natCtx = document.getElementById('natbar').getContext('2d');
+  document.body.classList.add('native');
+  sizeNativeBar();
+  addEventListener('resize', sizeNativeBar);
+})();
 
 // Use the game's own loading splash as the backdrop if the install had it.
 (async () => {
@@ -113,7 +157,10 @@ function startTips() {
   const show = () => { tipEl.innerHTML = '<b>TIP</b> &nbsp; ' + TIPS[i % TIPS.length]; i++; };
   show(); tipTimer = setInterval(show, 5000);
 }
+let revealed = false;
 function hideLoader() {
+  if (revealed) return;
+  revealed = true;
   if (tipTimer) clearInterval(tipTimer);
   loader.classList.add('hidden');
   setTimeout(() => { loader.style.display = 'none'; }, 700);
@@ -145,7 +192,9 @@ async function sources() {
   const inv = await opfsInventory();
   const missing = missingFiles(inv);
   if (missing.length) {
-    msg.innerHTML = `Game files not imported yet — <a href="../../onboard/">bring your game</a> first.`;
+    // Bounce back to the desktop — it shows the "files not found" alert,
+    // like a game exe erroring out to Windows.
+    location.replace('../../?err=zh-files-missing');
     throw new Error('assets missing');
   }
   const out = [];
@@ -161,12 +210,24 @@ async function sources() {
 let files;
 try { files = await sources(); } catch (e) { throw e; }
 
+// Reveal the canvas the moment the engine actually draws: d8web logs a
+// "[d8web] draw #N" line every 500 draw calls, and the first one lands while
+// the engine paints its own load screen. Pixel-polling can't do this —
+// Safari always reads back black from a non-preserved WebGL buffer, which
+// made every load look stuck for the full 20s fallback.
+const logAndReveal = (t) => {
+  if (!revealed && typeof t === 'string' && t.startsWith('[d8web] draw')) hideLoader();
+  console.log(t);
+};
+
 window.Module = {
   canvas: document.getElementById('canvas'),
-  locateFile: (p) => p + '?v=' + Date.now(),
+  // Stable version tag so the 9MB wasm caches between runs — Date.now() here
+  // forced a full re-download and recompile on every single load.
+  locateFile: (p) => p + '?v=9',
   arguments: ['-win'],
-  print: (t) => console.log(t),
-  printErr: (t) => console.log(t),
+  print: logAndReveal,
+  printErr: logAndReveal,
   onAbort: (w) => { msg.textContent = 'Engine aborted: ' + w; loader.classList.remove('hidden'); },
   onRuntimeInitialized: () => {
     msg.textContent = 'Loading the shell…';
@@ -225,7 +286,7 @@ window.Module = {
 };
 
 const s = document.createElement('script');
-s.src = './GeneralsXZH.js?v=' + Date.now();
+s.src = './GeneralsXZH.js?v=9';
 document.body.appendChild(s);
 </script>
 </body>

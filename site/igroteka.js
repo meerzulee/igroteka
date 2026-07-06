@@ -134,6 +134,113 @@ export async function requestPersistence() {
   return false;
 }
 
+// ---- Native loading-bar art -------------------------------------------------
+// The game's own loading bar lives in EnglishZH.big (already imported for
+// play) as slices of one UI atlas. We read just the BIG index plus that one
+// ~1MB entry — never the whole archive. Slice coordinates come from
+// Data/INI/MappedImages/TextureSize_512/SCSmShellUserInterface512.INI; the
+// bar layout matches the engine's W3DGadgetProgressBarImageDraw.
+
+const BAR_ATLAS = 'scsmshelluserinterface512_001.tga';
+
+// Atlas slices as [x, y, w, h]
+export const NATIVE_BAR = {
+  frameL: [303, 451, 20, 20],  // LoadingBar_L
+  frameR: [259, 451, 20, 20],  // LoadingBar_R
+  frameC: [155, 471, 10, 20],  // LoadingBar_C (repeating)
+  fill:   [446, 489, 3, 11],   // LoadingBar_ProgressCenter0 — the gold segment
+  empty:  [508, 69, 3, 11],    // LoadingBar_DePowered
+};
+
+// Parse a BIG archive index from a Blob/File without reading the payload.
+async function bigIndex(file) {
+  const head = new DataView(await file.slice(0, 16).arrayBuffer());
+  const magic = String.fromCharCode(...new Uint8Array(head.buffer, 0, 4));
+  if (magic !== 'BIGF' && magic !== 'BIG4') throw new Error('not a BIG archive');
+  const count = head.getUint32(8);       // big-endian
+  // Header field 3 is the data start (header + index size); pad by 16 in case
+  // an archive stores the index size alone. Over-reading is harmless — the
+  // parse loop stops after `count` entries.
+  const indexEnd = head.getUint32(12) + 16;
+  const buf = new Uint8Array(await file.slice(16, indexEnd).arrayBuffer());
+  const dv = new DataView(buf.buffer);
+  const entries = [];
+  let p = 0;
+  for (let i = 0; i < count && p + 8 < buf.length; i++) {
+    const offset = dv.getUint32(p), size = dv.getUint32(p + 4);
+    p += 8;
+    let name = '';
+    while (p < buf.length && buf[p]) name += String.fromCharCode(buf[p++]);
+    p++;
+    entries.push({ name, offset, size });
+  }
+  return entries;
+}
+
+async function bigExtract(file, suffix) {
+  const want = suffix.toLowerCase();
+  const e = (await bigIndex(file)).find(x => x.name.toLowerCase().endsWith(want));
+  if (!e) return null;
+  return new Uint8Array(await file.slice(e.offset, e.offset + e.size).arrayBuffer());
+}
+
+// Uncompressed TGA (type 2, 24/32bpp) -> canvas.
+function tgaToCanvas(bytes) {
+  const idLen = bytes[0], type = bytes[2];
+  if (type !== 2) throw new Error('unsupported TGA type ' + type);
+  const w = bytes[12] | (bytes[13] << 8), h = bytes[14] | (bytes[15] << 8);
+  const bpp = bytes[16] >> 3, topDown = !!(bytes[17] & 0x20);
+  const img = new ImageData(w, h);
+  let p = 18 + idLen;
+  for (let row = 0; row < h; row++) {
+    let q = (topDown ? row : h - 1 - row) * w * 4;
+    for (let x = 0; x < w; x++, p += bpp, q += 4) {
+      img.data[q] = bytes[p + 2];
+      img.data[q + 1] = bytes[p + 1];
+      img.data[q + 2] = bytes[p];
+      img.data[q + 3] = bpp === 4 ? bytes[p + 3] : 255;
+    }
+  }
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  c.getContext('2d').putImageData(img, 0, 0);
+  return c;
+}
+
+// Canvas holding the shell UI atlas, or null when unavailable.
+// Pass a Blob to read from (dev server); defaults to the OPFS copy.
+export async function nativeBarAtlas(srcBlob = null) {
+  try {
+    const big = srcBlob || await opfsReadFile('zh', 'EnglishZH.big');
+    const tga = await bigExtract(big, BAR_ATLAS);
+    return tga ? tgaToCanvas(tga) : null;
+  } catch { return null; }
+}
+
+// Draw the native bar into a 2d context, engine-style: capped frame with a
+// tiled center, then 3px fill segments inset (10,5) — gold for progress,
+// de-powered for the remainder. (W3DProgressBar.cpp, ImageDraw path.)
+export function drawNativeBar(ctx, atlas, pct, W = 148, H = 16) {
+  const { frameL, frameR, frameC, fill, empty } = NATIVE_BAR;
+  const blit = (s, dx, dy, dw, dh) =>
+    ctx.drawImage(atlas, s[0], s[1], s[2], s[3], dx, dy, dw, dh);
+  ctx.clearRect(0, 0, W, H);
+  const rightStart = W - frameR[2];
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(frameL[2], 0, rightStart - frameL[2], H);
+  ctx.clip();
+  for (let x = frameL[2]; x < rightStart; x += frameC[2]) blit(frameC, x, 0, frameC[2], H);
+  ctx.restore();
+  blit(frameL, 0, 0, frameL[2], H);
+  blit(frameR, rightStart, 0, frameR[2], H);
+  const inner = W - 20, segW = fill[2];
+  const slots = Math.floor(inner / segW);
+  const lit = Math.floor((inner * Math.max(0, Math.min(100, pct)) / 100) / segW);
+  for (let i = 0; i < slots; i++)
+    blit(i < lit ? fill : empty, 10 + i * segW, 5, segW, H - 10);
+}
+
 // ---- Minimal ZIP reader (store + deflate entries) — no dependencies. ----
 // Reads the central directory, extracts matching entries as Blobs.
 export async function* zipEntries(file) {
