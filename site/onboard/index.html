@@ -85,7 +85,9 @@
 
 <script type="module">
 import { classify, opfsWrite, opfsInventory, missingFiles, requestPersistence,
-         zipEntries, ZH_MANIFEST, opfsWritable, dedupeImports } from '../igroteka.js?v=13';
+         zipEntries, ZH_MANIFEST, opfsWritable, dedupeImports,
+         setGameFavicon } from '../igroteka.js?v=14';
+setGameFavicon();
 
 const statusEl = document.getElementById('status');
 const bar = document.getElementById('bar');

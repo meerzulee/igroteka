@@ -123,7 +123,9 @@
 
 <script type="module">
 import { ZH_MANIFEST, ZH_CURSORS, ZH_OPTIONAL, opfsInventory, missingFiles,
-         opfsReadFile, loadingImageURL, nativeBarAtlas, drawNativeBar } from '../../igroteka.js?v=13';
+         opfsReadFile, loadingImageURL, nativeBarAtlas, drawNativeBar,
+         setGameFavicon } from '../../igroteka.js?v=14';
+setGameFavicon();
 
 const msg = document.getElementById('msg');
 const fill = document.getElementById('fill');

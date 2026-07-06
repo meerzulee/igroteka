@@ -188,7 +188,9 @@
 
 <script type="module">
 import { classify, opfsWrite, opfsInventory, missingFiles, requestPersistence,
-         zipEntries, gameIconURL, opfsReadFile, opfsWritable, dedupeImports } from './igroteka.js?v=13';
+         zipEntries, gameIconURL, opfsReadFile, opfsWritable, dedupeImports,
+         setGameFavicon } from './igroteka.js?v=14';
+setGameFavicon();
 
 // ---------- tiny window manager ----------
 const desktop = document.getElementById('desktop');

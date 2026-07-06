@@ -120,6 +120,21 @@ export async function gameIconURL() {
   return null;
 }
 
+// Use the game's own .ico as the tab favicon. From the user's install in
+// OPFS (never shipped by us); no-op until they've imported the icons bucket.
+export async function setGameFavicon() {
+  const url = await gameIconURL();
+  if (!url) return;
+  let link = document.querySelector('link[rel="icon"]');
+  if (!link) {
+    link = document.createElement('link');
+    link.rel = 'icon';
+    document.head.appendChild(link);
+  }
+  link.type = 'image/x-icon';
+  link.href = url;
+}
+
 export async function opfsRoot() {
   const root = await navigator.storage.getDirectory();
   return root;
