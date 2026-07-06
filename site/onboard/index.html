@@ -85,7 +85,7 @@
 
 <script type="module">
 import { classify, opfsWrite, opfsInventory, missingFiles, requestPersistence,
-         zipEntries, ZH_MANIFEST, opfsWritable } from '../igroteka.js?v=9';
+         zipEntries, ZH_MANIFEST, opfsWritable, dedupeImports } from '../igroteka.js?v=10';
 
 const statusEl = document.getElementById('status');
 const bar = document.getElementById('bar');
@@ -123,9 +123,14 @@ async function importEntries(entries, total) {
     return;
   }
   try {
-  for await (const e of entries) {
+  // Collect first: depot duplicates (Data/INI/INIZH.big, base
+  // SkirmishScripts.scb) must not clobber the real ZH files.
+  const wanted = [];
+  for await (const e of entries) if (classify(e.relPath)) wanted.push(e);
+  const keep = dedupeImports(wanted, (e) => e.relPath);
+  total = keep.reduce((s, e) => s + (e.size || 0), 0);
+  for (const e of keep) {
     const c = classify(e.relPath);
-    if (!c) { doneBytes += e.size || 0; continue; }
     const blob = await e.blob();
     await opfsWrite(c.dir, c.name, blob, (w) => {
       bar.value = total ? ((doneBytes + w) / total) * 100 : 0;

@@ -41,6 +41,26 @@ export function classify(path) {
   return null;
 }
 
+// The Steam ZH depot ships DUPLICATE archives that classify to the same
+// target: an older INIZH.big under Data/INI/ (engine boots to a black shell
+// with it) and the base game's smaller SkirmishScripts.scb under
+// ZH_Generals/Data/Scripts/ (broken skirmish AI). Import order would decide
+// which copy wins — instead keep the shallowest path per target, which is
+// the real ZH file in every known layout.
+export function dedupeImports(entries, relOf) {
+  const byTarget = new Map();
+  for (const e of entries) {
+    const rel = relOf(e);
+    const c = classify(rel);
+    if (!c) continue;
+    const key = c.dir + '/' + c.name;
+    const depth = rel.split(/[\\/]/).length;
+    const prev = byTarget.get(key);
+    if (!prev || depth < prev.depth) byTarget.set(key, { e, depth });
+  }
+  return [...byTarget.values()].map((x) => x.e);
+}
+
 function canonical(lower) {
   for (const list of [...Object.values(ZH_MANIFEST), ...Object.values(ZH_OPTIONAL)]) {
     for (const f of list) if (norm(f) === lower) return f;
