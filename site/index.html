@@ -79,6 +79,7 @@
     .item { padding: 7px 10px; font-size: 12px; cursor: pointer;
       display: flex; gap: 8px; align-items: center; color: #0a246a; }
     .item .ig { font-size: 22px; width: 26px; text-align: center; }
+    img.ig { width: 24px; height: 24px; object-fit: contain; }
     .item:hover { background: #316ac5; color: #fff; }
     #smRight .item { font-weight: bold; }
     .smSep { border-top: 1px solid #d9d5c9; margin: 4px 10px; }
@@ -144,36 +145,36 @@
 
   <div id="startMenu">
     <div id="smHeader">
-      <div class="avatar">🕹️</div>
+      <div class="avatar"><img src="icons/user.png" style="width:34px;height:34px"></div>
       <div class="uname">Гость</div>
     </div>
     <div id="smCols">
       <div id="smLeft">
-        <div class="item" data-open="setup" id="smSetup"><span class="ig">💿</span>Install C&amp;C Generals: Zero Hour</div>
-        <div class="item" data-open="zh" style="display:none" id="smPlay"><span class="ig">🎖️</span>C&amp;C Generals: Zero Hour</div>
+        <div class="item" data-open="setup" id="smSetup"><img class="ig" src="icons/cd.png">Install C&amp;C Generals: Zero Hour</div>
+        <div class="item" data-open="zh" style="display:none" id="smPlay"><img class="ig game-ico" src="icons/games.png">C&amp;C Generals: Zero Hour</div>
         <div class="smSep"></div>
-        <div class="item" data-open="uninstall" style="display:none" id="smUninstall"><span class="ig">🗑️</span>Uninstall Zero Hour</div>
+        <div class="item" data-open="uninstall" style="display:none" id="smUninstall"><img class="ig" src="icons/trash.png">Uninstall Zero Hour</div>
         <div class="spacer"></div>
         <div class="smSep"></div>
-        <div class="item" id="allPrograms"><span class="ig">📦</span>All Programs <span style="margin-left:auto">▸</span>
+        <div class="item" id="allPrograms"><img class="ig" src="icons/programs.png">All Programs <span style="margin-left:auto">▸</span>
           <div id="apFlyout">
-            <div class="item" data-open="setup"><span class="ig">💿</span>Setup — Zero Hour</div>
-            <div class="item" data-open="zh"><span class="ig">🎖️</span>C&amp;C Generals: Zero Hour</div>
-            <div class="item" data-open="uninstall"><span class="ig">🗑️</span>Uninstall Zero Hour</div>
+            <div class="item" data-open="setup"><img class="ig" src="icons/cd.png">Setup — Zero Hour</div>
+            <div class="item" data-open="zh"><img class="ig game-ico" src="icons/games.png">C&amp;C Generals: Zero Hour</div>
+            <div class="item" data-open="uninstall"><img class="ig" src="icons/trash.png">Uninstall Zero Hour</div>
           </div>
         </div>
       </div>
       <div id="smRight">
-        <div class="item" data-open="about"><span class="ig">📄</span>About Igroteka</div>
-        <div class="item"><span class="ig">🎮</span>My Games</div>
-        <div class="item"><span class="ig">🖼️</span>My Screenshots</div>
+        <div class="item" data-open="about"><img class="ig" src="icons/doc.png">About Igroteka</div>
+        <div class="item"><img class="ig" src="icons/games.png">My Games</div>
+        <div class="item"><img class="ig" src="icons/pictures.png">My Screenshots</div>
         <div class="smSep"></div>
-        <div class="item"><span class="ig">⚙️</span>Settings</div>
-        <div class="item"><span class="ig">❓</span>Help and Support</div>
+        <div class="item"><img class="ig" src="icons/settings.png">Settings</div>
+        <div class="item"><img class="ig" src="icons/help.png">Help and Support</div>
       </div>
     </div>
     <div id="smFooter">
-      <div class="foot off" id="footOff"><span class="k">⏻</span>Turn Off Computer</div>
+      <div class="foot off" id="footOff"><img src="icons/shutdown.png" style="width:22px;height:22px;border-radius:4px">Turn Off Computer</div>
     </div>
   </div>
 
@@ -185,7 +186,7 @@
 
 <script type="module">
 import { classify, opfsWrite, opfsInventory, missingFiles, requestPersistence,
-         zipEntries, gameIconURL, opfsReadFile } from './igroteka.js?v=5';
+         zipEntries, gameIconURL, opfsReadFile } from './igroteka.js?v=6';
 
 // ---------- tiny window manager ----------
 const desktop = document.getElementById('desktop');
@@ -271,7 +272,7 @@ async function openSetup() {
   if (!body) return;
   let stepEl;
   const render = (html, btns) => {
-    body.innerHTML = `<div class="wizardStep"><div class="wizardArt">💿</div>
+    body.innerHTML = `<div class="wizardStep"><div class="wizardArt"><img src="icons/cd.png" style="width:56px;height:56px"></div>
       <div class="wizardMain">${html}</div></div><div class="wizardBtns">${btns}</div>`;
     stepEl = body.querySelector('.wizardMain');
   };
@@ -407,7 +408,7 @@ async function openUninstall() {
   const body = makeWindow('uninstall', 'Uninstall — C&C Generals: Zero Hour', 520);
   if (!body) return;
   const render = (html, btns) => {
-    body.innerHTML = `<div class="wizardStep"><div class="wizardArt">🗑️</div>
+    body.innerHTML = `<div class="wizardStep"><div class="wizardArt"><img src="icons/trash.png" style="width:56px;height:56px"></div>
       <div class="wizardMain">${html}</div></div><div class="wizardBtns">${btns}</div>`;
   };
   render(`<h3>Uninstall Zero Hour</h3>
@@ -442,9 +443,9 @@ async function openUninstall() {
 }
 
 // ---------- desktop layout ----------
-const setupIcon = addIcon('setup', '💿', 'Install C&C Generals Zero Hour', 24, 24, openSetup);
+const setupIcon = addIcon('setup', '<img src="icons/cd.png" alt="">', 'Install C&C Generals Zero Hour', 24, 24, openSetup);
 setupIcon.id = 'setupIcon';
-addIcon('about', '📄', 'About Igroteka', 24, 130, openAbout);
+addIcon('about', '<img src="icons/doc.png" alt="">', 'About Igroteka', 24, 130, openAbout);
 
 async function placeGameIcon() {
   document.getElementById('setupIcon').style.display = 'none';
@@ -455,7 +456,9 @@ async function placeGameIcon() {
   if (old) old.remove();
   // Use the game's own icon if the user's install provided one (never shipped by us)
   const url = await gameIconURL();
-  const glyph = url ? `<img src="${url}" alt="">` : '🎖️';
+  const glyph = url ? `<img src="${url}" alt="">` : '<img src="icons/games.png" alt="">';
+  // the game's own icon everywhere it appears in the start menu too
+  if (url) document.querySelectorAll('img.game-ico').forEach(i => { i.src = url; });
   const el = addIcon('zh', glyph, 'C&C Generals Zero Hour', 24, 24, () => location.href = 'play/zh/');
   el.id = 'zhIcon';
 }
