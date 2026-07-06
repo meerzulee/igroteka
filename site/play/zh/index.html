@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Zero Hour — Igroteka</title>
+  <style>
+    html, body { margin:0; background:#0b0c10; color:#cfd2dd;
+                 font: 13px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
+    #stage { display:flex; justify-content:center; align-items:center;
+             min-height:100vh; }
+    canvas { width:1024px; height:768px; max-width:100vw; background:#000; }
+    #loader { position:fixed; inset:0; display:flex; flex-direction:column;
+              justify-content:center; align-items:center; gap:14px;
+              background:#0b0c10; z-index:5; }
+    #loader.hidden { display:none; }
+    progress { width:320px; height:8px; }
+    #msg { color:#8b90a3; }
+    a { color:#e8b34b; }
+  </style>
+</head>
+<body>
+  <div id="loader">
+    <div style="font-size:20px;color:#fff">Zero Hour</div>
+    <progress id="bar" max="100" value="0"></progress>
+    <div id="msg">Checking your game files…</div>
+  </div>
+  <div id="stage">
+    <canvas id="canvas" width="1024" height="768" oncontextmenu="event.preventDefault()"></canvas>
+  </div>
+
+<script type="module">
+import { ZH_MANIFEST, opfsInventory, missingFiles, opfsReadFile } from '../../igroteka.js';
+
+const msg = document.getElementById('msg');
+const bar = document.getElementById('bar');
+const loader = document.getElementById('loader');
+const DEV = new URLSearchParams(location.search).get('dev') === '1';
+
+// dir -> wasm FS destination
+const DEST = {
+  zh: (n) => `/game/${n}`,
+  base: (n) => `/game-base/${n}`,
+  scripts: (n) => `/game/Data/Scripts/${n}`,
+};
+
+async function sources() {
+  if (DEV) {
+    // Dev mode: fetch from /gamedata like the old boot harness (local server only)
+    const map = { zh: (n) => `/gamedata/${n}`, base: (n) => `/gamedata/base-${n}`,
+                  scripts: (n) => `/gamedata/Scripts/${n}` };
+    const out = [];
+    for (const [dir, files] of Object.entries(ZH_MANIFEST))
+      for (const f of files)
+        out.push({ dir, name: f, load: async () => {
+          const r = await fetch(map[dir](f));
+          if (!r.ok) throw new Error(`${f}: HTTP ${r.status}`);
+          return new Uint8Array(await r.arrayBuffer());
+        }});
+    return out;
+  }
+  const inv = await opfsInventory();
+  const missing = missingFiles(inv);
+  if (missing.length) {
+    msg.innerHTML = `Game files not imported yet — <a href="../../onboard/">bring your game</a> first.`;
+    throw new Error('assets missing');
+  }
+  const out = [];
+  for (const [dir, files] of Object.entries(ZH_MANIFEST))
+    for (const f of files)
+      out.push({ dir, name: f, load: async () => {
+        const file = await opfsReadFile(dir, f);
+        return new Uint8Array(await file.arrayBuffer());
+      }});
+  return out;
+}
+
+let files;
+try { files = await sources(); } catch (e) { throw e; }
+
+window.Module = {
+  canvas: document.getElementById('canvas'),
+  locateFile: (p) => p + '?v=' + Date.now(),
+  arguments: ['-win'],
+  print: (t) => console.log(t),
+  printErr: (t) => console.log(t),
+  onAbort: (w) => { msg.textContent = 'Engine aborted: ' + w; loader.classList.remove('hidden'); },
+  onRuntimeInitialized: () => { loader.classList.add('hidden'); },
+  preRun: [function () {
+    ENV.CNC_GENERALS_ZH_PATH = '/game';
+    ENV.CNC_GENERALS_PATH = '/game-base';
+    ENV.HOME = '/home/web_user';
+    FS.mkdir('/game'); FS.mkdir('/game-base'); FS.mkdirTree('/game/Data/Scripts');
+    FS.mkdirTree('/fonts');
+    const userDir = '/home/web_user/.local/share/GeneralsX/GeneralsZH';
+    FS.mkdirTree(userDir);
+    FS.writeFile(userDir + '/Options.ini',
+      'UseShadowVolumes = no\nUseShadowDecals = no\nResolution = 1024 768\n');
+
+    addRunDependency('gamedata');
+    (async () => {
+      // Font is ours to host (Liberation Sans, SIL OFL)
+      const font = await fetch('./default.ttf').then(r => r.arrayBuffer());
+      FS.writeFile('/fonts/default.ttf', new Uint8Array(font));
+
+      let done = 0;
+      for (const f of files) {
+        msg.textContent = `Loading ${f.name}…`;
+        const data = await f.load();
+        FS.writeFile(DEST[f.dir](f.name), data);
+        bar.value = (++done / files.length) * 100;
+      }
+      msg.textContent = 'Starting engine…';
+      removeRunDependency('gamedata');
+    })().catch(e => { msg.textContent = 'Load failed: ' + e; });
+  }],
+};
+
+const s = document.createElement('script');
+s.src = './GeneralsXZH.js?v=' + Date.now();
+document.body.appendChild(s);
+</script>
+</body>
+</html>

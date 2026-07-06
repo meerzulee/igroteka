@@ -30,3 +30,9 @@ compile_commands.json
 # - dvijoke: the Dvijoke engine repo (github.com/meerzulee/dvijoke)
 zh-web/
 dvijoke/
+
+# Site: engine builds are deploy artifacts (GPL wasm — publish only once the
+# engine fork source is public); gamedata is a local dev symlink
+site/play/zh/GeneralsXZH.js
+site/play/zh/GeneralsXZH.wasm
+site/gamedata

@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Igroteka — bring your game</title>
+  <style>
+    :root { --bg:#101116; --panel:#1a1c26; --line:#2a2d3a; --text:#cfd2dd;
+            --accent:#e8b34b; --ok:#6fca7a; --bad:#e06c6c; }
+    * { box-sizing: border-box; }
+    html, body { margin:0; background:var(--bg); color:var(--text);
+                 font: 15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
+    main { max-width: 720px; margin: 0 auto; padding: 40px 20px 80px; }
+    h1 { font-size: 26px; margin: 0 0 4px; color: #fff; }
+    .sub { color:#8b90a3; margin: 0 0 28px; }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:12px;
+            padding:20px; margin-bottom:16px; }
+    .card h2 { font-size:16px; margin:0 0 6px; color:#fff; }
+    .card p { margin: 6px 0; color:#a7abbd; font-size:14px; }
+    button { background:var(--accent); color:#181818; border:0; border-radius:8px;
+             padding:10px 18px; font-size:15px; font-weight:600; cursor:pointer; }
+    button.secondary { background:#2a2d3a; color:var(--text); }
+    button:disabled { opacity:.45; cursor:default; }
+    .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:10px; }
+    #status { margin-top:18px; }
+    .file { display:flex; justify-content:space-between; padding:4px 0;
+            border-bottom:1px solid var(--line); font-size:13px; }
+    .file .ok { color:var(--ok); } .file .bad { color:var(--bad); }
+    progress { width:100%; height:8px; margin-top:12px; }
+    #done { display:none; }
+    .hint { font-size:13px; color:#8b90a3; }
+    code { background:#22242f; padding:1px 5px; border-radius:4px; font-size:12.5px; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Bring your game</h1>
+  <p class="sub">Igroteka never uploads or hosts game files. Your copy of
+  <strong>C&amp;C Generals: Zero Hour</strong> is imported into this browser's
+  private storage, on this device only.</p>
+
+  <div class="card">
+    <h2>1 · From your Steam install</h2>
+    <p>Pick the game folder — usually
+      <code>Steam/steamapps/common/Command and Conquer Generals Zero Hour</code>
+      (macOS: <code>~/Library/Application Support/Steam/steamapps/common/…</code>)</p>
+    <div class="row">
+      <button id="pickFolder">Choose game folder…</button>
+      <input type="file" id="folderInput" webkitdirectory multiple style="display:none">
+      <span class="hint" id="pickerHint"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>2 · Or from an asset pack (.zip)</h2>
+    <p>Coming from another device? Zip the game folder on your computer
+      (right-click → Compress), AirDrop it here, then pick the zip.</p>
+    <div class="row">
+      <button id="pickZip" class="secondary">Choose .zip…</button>
+      <input type="file" id="zipInput" accept=".zip" style="display:none">
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>3 · From your cloud</h2>
+    <p>iCloud Drive works through the pickers above (Files app).
+       Direct Google Drive / Dropbox import is on the roadmap.</p>
+  </div>
+
+  <div id="status"></div>
+  <progress id="bar" max="100" value="0" style="display:none"></progress>
+
+  <div class="card" id="done">
+    <h2>Ready ✓</h2>
+    <p>Everything Zero Hour needs is imported.</p>
+    <div class="row"><button onclick="location.href='../play/zh/'">Play Zero Hour</button></div>
+  </div>
+
+  <p class="hint">Don't own it? Zero Hour is on
+    <a href="https://store.steampowered.com/bundle/39394/">Steam (C&amp;C Ultimate Collection)</a>.
+    Files stay in your browser's private storage (OPFS) and can be cleared any time
+    from site settings.</p>
+</main>
+
+<script type="module">
+import { classify, opfsWrite, opfsInventory, missingFiles, requestPersistence,
+         zipEntries, ZH_MANIFEST } from '../igroteka.js';
+
+const statusEl = document.getElementById('status');
+const bar = document.getElementById('bar');
+const doneCard = document.getElementById('done');
+
+function report(inv) {
+  const missing = missingFiles(inv);
+  const have = Object.values(inv).flat().length;
+  let html = '';
+  if (have) html += `<div class="card"><h2>Imported</h2>` +
+    Object.entries(inv).flatMap(([d, fs]) => fs.map(f =>
+      `<div class="file"><span>${d}/${f}</span><span class="ok">✓</span></div>`)).join('') +
+    `</div>`;
+  if (missing.length) html += `<div class="card"><h2>Still needed</h2>` +
+    missing.map(m => `<div class="file"><span>${m}</span><span class="bad">missing</span></div>`).join('') +
+    `</div>`;
+  statusEl.innerHTML = html;
+  doneCard.style.display = missing.length ? 'none' : 'block';
+  return missing.length === 0;
+}
+
+async function refresh() { report(await opfsInventory()); }
+
+async function importEntries(entries, total) {
+  // entries: async iterable of {relPath, size, blob(): Promise<Blob>}
+  bar.style.display = 'block';
+  let doneBytes = 0;
+  await requestPersistence();
+  for await (const e of entries) {
+    const c = classify(e.relPath);
+    if (!c) { doneBytes += e.size || 0; continue; }
+    const blob = await e.blob();
+    await opfsWrite(c.dir, c.name, blob, (w) => {
+      bar.value = total ? ((doneBytes + w) / total) * 100 : 0;
+    });
+    doneBytes += e.size || blob.size;
+    bar.value = total ? (doneBytes / total) * 100 : 0;
+    await refresh();
+  }
+  bar.style.display = 'none';
+  await refresh();
+}
+
+// --- Door 1: folder pick ---
+const pickFolder = document.getElementById('pickFolder');
+const folderInput = document.getElementById('folderInput');
+
+async function* walkHandle(dirHandle, prefix = '') {
+  for await (const [name, h] of dirHandle.entries()) {
+    const rel = prefix ? `${prefix}/${name}` : name;
+    if (h.kind === 'file') {
+      const f = await h.getFile();
+      yield { relPath: rel, size: f.size, blob: async () => f };
+    } else if (h.kind === 'directory') {
+      // Only descend where the manifest can live — keeps huge installs fast
+      if (prefix.split('/').length < 3) yield* walkHandle(h, rel);
+    }
+  }
+}
+
+pickFolder.onclick = async () => {
+  if (window.showDirectoryPicker) {
+    try {
+      const dir = await window.showDirectoryPicker({ mode: 'read' });
+      const files = [];
+      let total = 0;
+      for await (const e of walkHandle(dir)) {
+        if (classify(e.relPath)) { files.push(e); total += e.size; }
+      }
+      if (!files.length) {
+        statusEl.innerHTML = `<div class="card"><h2>No game files found</h2>
+          <p>That folder has none of the expected <code>.big</code> archives.
+          Pick the Zero Hour install folder itself.</p></div>`;
+        return;
+      }
+      await importEntries((async function* () { yield* files; })(), total);
+    } catch (e) { if (e.name !== 'AbortError') throw e; }
+  } else {
+    folderInput.click();  // Safari/Firefox fallback
+  }
+};
+
+folderInput.onchange = async () => {
+  const files = [...folderInput.files]
+    .map(f => ({ relPath: f.webkitRelativePath || f.name, size: f.size, blob: async () => f }))
+    .filter(e => classify(e.relPath));
+  const total = files.reduce((s, e) => s + e.size, 0);
+  await importEntries((async function* () { yield* files; })(), total);
+};
+
+// --- Door 2: zip pack ---
+const pickZip = document.getElementById('pickZip');
+const zipInput = document.getElementById('zipInput');
+pickZip.onclick = () => zipInput.click();
+zipInput.onchange = async () => {
+  const file = zipInput.files[0];
+  if (!file) return;
+  const wanted = [];
+  let total = 0;
+  for await (const e of zipEntries(file)) {
+    if (classify(e.name)) { wanted.push(e); total += e.rawSize; }
+  }
+  await importEntries((async function* () {
+    for (const e of wanted) yield { relPath: e.name, size: e.rawSize, blob: e.blob };
+  })(), total);
+};
+
+if (!window.showDirectoryPicker)
+  document.getElementById('pickerHint').textContent =
+    'Your browser opens a folder-upload dialog here.';
+
+refresh();
+</script>
+</body>
+</html>

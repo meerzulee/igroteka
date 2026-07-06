@@ -161,3 +161,25 @@ The café moment.
 | EA legal posture shifts | GPL engine + no hosted assets + no trademark use = the defensible position; W3D Hub titles keep the public demo clean |
 | Solo-project stall | Upstream RFC + public milestones convert watchers into contributors |
 | d3d9-webgl abandonment | It's 13.7k lines MIT — we own our fork outright either way |
+
+
+## Asset onboarding plan (2026-07-06)
+
+Principle: game bits touch only the user's devices and the user's clouds.
+Igroteka infrastructure never stores or transmits assets — only engine builds,
+the wizard, and user-created data (saves/settings/replays, later via cafe/).
+
+Wizard import doors (all → OPFS, validated client-side by name+SHA-256 manifest):
+1. Local folder — showDirectoryPicker (Chromium) / webkitdirectory fallback (v1)
+2. Asset pack .zip — single-file pick; the iPad path via AirDrop/Files (v1)
+3. User's own cloud — iCloud Drive via Files picker; Google Drive & Dropbox via
+   client-side OAuth (CORS APIs, tokens never touch our server) (v1.x)
+4. Export asset pack — slim the Steam install to required .bigs, zip for
+   AirDrop to other devices (v1.x; manual Finder-compress instructions in v1)
+
+Legal red lines (documented for ToS): no asset hosting even per-user
+(MP3.com/Cablevision line), no Steam credentials ever (steamcmd-on-server is
+banned), Steam OpenID sign-in later = identity + ownership badge only.
+
+iPad: transfer story = asset pack; the real gate is memory — needs the lazy
+OPFS VFS (range-read .bigs on demand) instead of full MEMFS preload.
