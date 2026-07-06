@@ -9,12 +9,13 @@
                  font: 13px/1.5 "Segoe UI", Roboto, sans-serif; }
     #stage { display:flex; justify-content:center; align-items:center;
              min-height:100vh; padding:14px; box-sizing:border-box; }
-    /* Scale down to fit the window (4:3 kept via the canvas intrinsic ratio)
-       instead of clipping — a flush-cropped top row reads as a bug. */
-    canvas { width:auto; height:auto;
-             max-width:min(1024px, 100%);
-             max-height:min(768px, calc(100vh - 28px));
-             background:#000; }
+    /* Fill the window at the game's aspect ratio (intrinsic canvas ratio
+       keeps it true) — scales up as well as down, so 16:9 resolutions run
+       edge to edge instead of sitting letterboxed at native pixel size. */
+    /* Sized by fitCanvas(): exact aspect box, scaled to fill the window.
+       No object-fit — SDL maps the mouse across the whole element, so the
+       element must be exactly as big as the picture. */
+    canvas { background:#000; }
     /* Zero Hour-style loading screen — original tactical art, no game assets */
     #loader { position:fixed; inset:0; z-index:5; overflow:hidden; opacity:1;
               transition: opacity .6s; color:#c9d4e0;
@@ -148,6 +149,24 @@ const bar = { set value(v) {
     drawNativeBar(natCtx, natAtlas, v, c.width, c.height);
   }
 } };
+
+// Scale the canvas to fill the window at the game's own aspect ratio —
+// up as well as down, so 16:9 in-game resolutions run edge to edge. The
+// engine changes the canvas width/height attributes on resolution switch;
+// the attribute observer re-fits when it does.
+function fitCanvas() {
+  const c = document.getElementById('canvas');
+  const availW = innerWidth - 28, availH = innerHeight - 28;
+  const ratio = (c.width || 4) / (c.height || 3);
+  let w = availW, h = w / ratio;
+  if (h > availH) { h = availH; w = h * ratio; }
+  c.style.width = Math.round(w) + 'px';
+  c.style.height = Math.round(h) + 'px';
+}
+fitCanvas();
+addEventListener('resize', fitCanvas);
+new MutationObserver(fitCanvas).observe(document.getElementById('canvas'),
+  { attributes: true, attributeFilter: ['width', 'height'] });
 
 // XP crash dialog over the canvas — like a real game crash on the desktop.
 function showCrashDialog(html, opts = {}) {
@@ -375,16 +394,26 @@ window.Module = {
     FS.mkdirTree('/fonts');
     const userDir = '/home/web_user/.local/share/GeneralsX/GeneralsZH';
     FS.mkdirTree(userDir);
-    // Staged fresh each boot (MEMFS): Medium detail as the predictable
-    // default — without StaticGameLOD the engine CPU-benchmarks itself every
-    // load (wasm timing lies, result varies). The corner fps/clock HUD is
-    // fine at default size now that the engine anchors it inside the frame.
-    FS.writeFile(userDir + '/Options.ini',
+    // The engine's user dir lives in MEMFS and evaporates on reload, so
+    // in-game option changes (resolution, detail) are mirrored to
+    // localStorage and restored here. First boot gets predictable defaults:
+    // Medium detail (no StaticGameLOD -> flaky CPU auto-benchmark per load).
+    const savedOptions = localStorage.getItem('zh-options-ini');
+    FS.writeFile(userDir + '/Options.ini', savedOptions ||
       'UseShadowVolumes = no\n' +
       'UseShadowDecals = no\n' +
       'Resolution = 1024 768\n' +
       'StaticGameLOD = Medium\n' +
       'IdealStaticGameLOD = Medium\n');
+    // Mirror the engine's own writes back out (Accept in the Options menu
+    // rewrites the file; poll is cheap — the file is a few hundred bytes).
+    setInterval(() => {
+      try {
+        const cur = FS.readFile(userDir + '/Options.ini', { encoding: 'utf8' });
+        if (cur && cur !== localStorage.getItem('zh-options-ini'))
+          localStorage.setItem('zh-options-ini', cur);
+      } catch { /* not written yet */ }
+    }, 5000);
 
     addRunDependency('gamedata');
     (async () => {
