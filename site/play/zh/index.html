@@ -357,8 +357,19 @@ window.Module = {
     FS.mkdirTree('/fonts');
     const userDir = '/home/web_user/.local/share/GeneralsX/GeneralsZH';
     FS.mkdirTree(userDir);
+    // Staged fresh each boot (MEMFS): Medium detail as the predictable
+    // default — without StaticGameLOD the engine CPU-benchmarks itself every
+    // load (wasm timing lies, result varies). RenderFps/SystemTime font size
+    // 0 turns off the GeneralsX corner HUD, whose anchor is hardcoded at
+    // y=-1 and draws clipped at the top of the frame.
     FS.writeFile(userDir + '/Options.ini',
-      'UseShadowVolumes = no\nUseShadowDecals = no\nResolution = 1024 768\n');
+      'UseShadowVolumes = no\n' +
+      'UseShadowDecals = no\n' +
+      'Resolution = 1024 768\n' +
+      'StaticGameLOD = Medium\n' +
+      'IdealStaticGameLOD = Medium\n' +
+      'RenderFpsFontSize = 0\n' +
+      'SystemTimeFontSize = 0\n');
 
     addRunDependency('gamedata');
     (async () => {
