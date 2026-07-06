@@ -35,7 +35,7 @@ API calls. Adding WebGPU later = new WGSL emitter + new translator, nothing else
 
 - **Igroteka** (игротека) — the platform: the café people visit. Site, lobbies,
   profiles, WebRTC multiplayer.
-- **Dvijoke** (движок, "game engine" in Russian gamedev slang) — the engine
+- **[Dvijoke](https://github.com/meerzulee/dvijoke)** (движок, "game engine" in Russian gamedev slang) — the engine
   runtime: everything that makes a W3D/SAGE game run in a tab (engine fork +
   COM bridge + boot loader + d8web). Slavic readers see движок; Western
   readers get the joke — both readings intended. Released as
@@ -48,7 +48,7 @@ API calls. Adding WebGPU later = new WGSL emitter + new translator, nothing else
 
 | Component | License | Purpose |
 |---|---|---|
-| `d8web` | MIT | D3D8 → WebGL2/WebGPU translation layer (builds on [d3d9-webgl](https://github.com/LostMyCode/d3d9-webgl), MIT) |
+| [`d8web`](https://github.com/meerzulee/dvijoke) | MIT | D3D8 → WebGL2/WebGPU translation layer — lives in the Dvijoke repo, checked out at `d8web/` |
 | `zh-web` | GPL v3 | [GeneralsGameCode](https://github.com/TheSuperHackers/GeneralsGameCode) fork + Emscripten toolchain — together with `d8web` this is **Dvijoke** |
 | `cafe` | MIT | Lobby web app, WebRTC signaling, OPFS asset onboarding |
 | `site` | — | Landing page, docs, demos |

@@ -25,5 +25,8 @@ node_modules/
 compile_commands.json
 .gstack/
 
-# zh-web is a fork of GeneralsX with its own git history (Igroteka wasm branch)
+# Nested repos with their own git history:
+# - zh-web: GPL fork of GeneralsGameCode (Igroteka wasm branch)
+# - d8web: the Dvijoke engine repo (github.com/meerzulee/dvijoke)
 zh-web/
+d8web/
