@@ -89,6 +89,7 @@ window.Module = {
   // closing a fullscreen game dropped you back to Windows.
   onExit: () => { location.href = '../../'; },
   quit: () => { location.href = '../../'; },
+  onGameExit: () => { location.href = '../../'; },
   preRun: [function () {
     ENV.CNC_GENERALS_ZH_PATH = '/game';
     ENV.CNC_GENERALS_PATH = '/game-base';
