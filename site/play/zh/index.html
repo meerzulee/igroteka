@@ -216,9 +216,32 @@ try { files = await sources(); } catch (e) { throw e; }
 // Safari always reads back black from a non-preserved WebGL buffer, which
 // made every load look stuck for the full 20s fallback.
 const logAndReveal = (t) => {
-  if (!revealed && typeof t === 'string' && t.startsWith('[d8web] draw')) hideLoader();
+  if (typeof t === 'string') {
+    if (!revealed && t.startsWith('[d8web] draw')) hideLoader();
+    // Engine died before it could draw — say so instead of a silent black
+    // canvas. Brave's fingerprint shield is the common WebGL2 blocker.
+    if (t.includes('WebGL2 context creation failed') || t.startsWith('FATAL ERROR')) {
+      revealed = false;
+      loader.style.display = '';
+      loader.classList.remove('hidden');
+      msg.textContent = 'Graphics failed to start — this browser blocked WebGL2. ' +
+        'In Brave: click the Shields icon and turn off fingerprint protection for this site, then reload.';
+    }
+  }
   console.log(t);
 };
+
+// Create the WebGL2 context BEFORE the engine, with the engine's own
+// attributes (d8web gl_backend.cpp). Whoever calls getContext first wins the
+// attributes for good. It must be alpha:false — with the default alpha:true
+// the terrain shore pass writes low framebuffer alpha as a scratch channel
+// and the browser composites those pixels against the black page: black
+// sawtooth along shorelines and around rocks. And it must exist page-side —
+// in Safari an engine-created context renders but never composites.
+document.getElementById('canvas').getContext('webgl2', {
+  alpha: false, depth: true, stencil: true, antialias: false,
+  preserveDrawingBuffer: true,
+});
 
 window.Module = {
   canvas: document.getElementById('canvas'),
@@ -231,23 +254,8 @@ window.Module = {
   onAbort: (w) => { msg.textContent = 'Engine aborted: ' + w; loader.classList.remove('hidden'); },
   onRuntimeInitialized: () => {
     msg.textContent = 'Loading the shell…';
-    // Wait for the engine to actually paint before revealing the canvas.
-    // Poll the WebGL2 context: once the framebuffer stops being all-black,
-    // the shell map is up. Fall back to a hard timeout so we never hang.
-    const canvas = document.getElementById('canvas');
-    const gl = canvas.getContext('webgl2', { preserveDrawingBuffer: true });
-    const px = new Uint8Array(4);
-    const t0 = Date.now();
-    const poll = () => {
-      let painted = false;
-      try {
-        gl.readPixels(canvas.width >> 1, canvas.height >> 1, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
-        painted = (px[0] | px[1] | px[2]) > 8;
-      } catch { /* context busy */ }
-      if (painted || Date.now() - t0 > 20000) hideLoader();
-      else requestAnimationFrame(poll);
-    };
-    requestAnimationFrame(poll);
+    // The reveal happens on the first '[d8web] draw' log (logAndReveal).
+    setTimeout(hideLoader, 30000);  // last-resort fallback
   },
   // EXIT GAME in the menu ends the engine — return to the desktop like
   // closing a fullscreen game dropped you back to Windows.
