@@ -41,7 +41,7 @@ API calls. Adding WebGPU later = new WGSL emitter + new translator, nothing else
   readers get the joke — both readings intended. Released as
   `Dvijoke <version> (<backend>)`, e.g. `Dvijoke 0.4 (WebGL2)`, later
   `Dvijoke 1.x (WebGPU)`. One engine version, N backend builds.
-- **d8web** — the graphics translation library inside Dvigatel. Backends
+- **d8web** — the graphics translation library inside Dvijoke. Backends
   (WebGL2 / WebGPU) are its build variants behind the `IBackend` seam.
 
 ## Components
