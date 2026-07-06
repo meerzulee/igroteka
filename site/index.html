@@ -264,6 +264,7 @@ function openAbout() {
     <p><b>Igroteka</b> — the 2000s gaming café, in your browser.</p>
     <p>Real native game ports (WebAssembly, Dvijoke engine), no streaming.
        Your game files stay on your device — Igroteka never uploads or hosts them.</p>
+    <p>Made by Meerzulee</p>
     <p>Not affiliated with or endorsed by EA or Microsoft.</p></div>`;
 }
 
@@ -463,6 +464,40 @@ async function placeGameIcon() {
   el.id = 'zhIcon';
 }
 if (localStorage.getItem('zh-installed')) placeGameIcon();
+
+// ---------- error dialog: Play bounced back because game files are gone ----------
+function showFilesMissingError() {
+  const body = makeWindow('zh-error', 'C&C Generals: Zero Hour', 420);
+  if (!body) return;
+  body.innerHTML = `
+    <div style="display:flex; gap:14px; padding:16px 14px; align-items:flex-start; background:#fff;">
+      <svg width="32" height="32" viewBox="0 0 32 32" style="flex:0 0 32px" aria-hidden="true">
+        <circle cx="16" cy="16" r="15" fill="#d83a2e"/>
+        <path d="M10 10 L22 22 M22 10 L10 22" stroke="#fff" stroke-width="4" stroke-linecap="round"/>
+      </svg>
+      <div style="font-size:12px; line-height:1.5;">
+        Zero Hour could not start because the game files were not found on this
+        computer.<br><br>
+        Run <b>Setup — C&amp;C Generals: Zero Hour</b> to bring your game files
+        back, then try again.
+      </div>
+    </div>
+    <div style="display:flex; justify-content:center; gap:8px; padding:10px;">
+      <button id="errSetup">Run Setup</button>
+      <button id="errClose">Close</button>
+    </div>`;
+  const win = body.closest('.window');
+  win.style.left = Math.max(20, (innerWidth - 420) / 2) + 'px';
+  win.style.top = Math.max(20, innerHeight * 0.3) + 'px';
+  const close = () => win.querySelector('[aria-label="Close"]').click();
+  body.querySelector('#errSetup').onclick = () => { close(); openSetup(); };
+  body.querySelector('#errClose').onclick = close;
+}
+if (new URLSearchParams(location.search).get('err') === 'zh-files-missing') {
+  history.replaceState(null, '', location.pathname);  // no re-alert on reload
+  localStorage.removeItem('zh-installed');  // install claim is stale — files gone
+  showFilesMissingError();
+}
 
 // ---------- start menu + clock ----------
 const startMenu = document.getElementById('startMenu');
