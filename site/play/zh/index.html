@@ -329,7 +329,7 @@ window.Module = {
   canvas: document.getElementById('canvas'),
   // Stable version tag so the 9MB wasm caches between runs — Date.now() here
   // forced a full re-download and recompile on every single load.
-  locateFile: (p) => p + '?v=9',
+  locateFile: (p) => p + '?v=10',
   arguments: ['-win'],
   print: logAndReveal,
   printErr: logAndReveal,
@@ -359,17 +359,14 @@ window.Module = {
     FS.mkdirTree(userDir);
     // Staged fresh each boot (MEMFS): Medium detail as the predictable
     // default — without StaticGameLOD the engine CPU-benchmarks itself every
-    // load (wasm timing lies, result varies). RenderFps/SystemTime font size
-    // 0 turns off the GeneralsX corner HUD, whose anchor is hardcoded at
-    // y=-1 and draws clipped at the top of the frame.
+    // load (wasm timing lies, result varies). The corner fps/clock HUD is
+    // fine at default size now that the engine anchors it inside the frame.
     FS.writeFile(userDir + '/Options.ini',
       'UseShadowVolumes = no\n' +
       'UseShadowDecals = no\n' +
       'Resolution = 1024 768\n' +
       'StaticGameLOD = Medium\n' +
-      'IdealStaticGameLOD = Medium\n' +
-      'RenderFpsFontSize = 0\n' +
-      'SystemTimeFontSize = 0\n');
+      'IdealStaticGameLOD = Medium\n');
 
     addRunDependency('gamedata');
     (async () => {
@@ -392,7 +389,7 @@ window.Module = {
 };
 
 const s = document.createElement('script');
-s.src = './GeneralsXZH.js?v=9';
+s.src = './GeneralsXZH.js?v=10';
 document.body.appendChild(s);
 </script>
 </body>
