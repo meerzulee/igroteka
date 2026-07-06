@@ -31,12 +31,23 @@ Backend rule: backends stay dumb. All intelligence (state tracking, shader descr
 state-hash caching) lives above the seam; a backend only translates state snapshots into
 API calls. Adding WebGPU later = new WGSL emitter + new translator, nothing else moves.
 
+## Naming
+
+- **Igroteka** (игротека) — the platform: the café people visit. Site, lobbies,
+  profiles, WebRTC multiplayer.
+- **Dvigatel** (двигатель, "engine") — the engine runtime: everything that makes a
+  W3D/SAGE game run in a tab (engine fork + COM bridge + boot loader + d8web).
+  Released as `Dvigatel <version> (<backend>)`, e.g. `Dvigatel 0.4 (WebGL2)`,
+  later `Dvigatel 1.x (WebGPU)`. One engine version, N backend builds.
+- **d8web** — the graphics translation library inside Dvigatel. Backends
+  (WebGL2 / WebGPU) are its build variants behind the `IBackend` seam.
+
 ## Components
 
 | Component | License | Purpose |
 |---|---|---|
 | `d8web` | MIT | D3D8 → WebGL2/WebGPU translation layer (builds on [d3d9-webgl](https://github.com/LostMyCode/d3d9-webgl), MIT) |
-| `zh-web` | GPL v3 | [GeneralsGameCode](https://github.com/TheSuperHackers/GeneralsGameCode) fork + Emscripten toolchain |
+| `zh-web` | GPL v3 | [GeneralsGameCode](https://github.com/TheSuperHackers/GeneralsGameCode) fork + Emscripten toolchain — together with `d8web` this is **Dvigatel** |
 | `cafe` | MIT | Lobby web app, WebRTC signaling, OPFS asset onboarding |
 | `site` | — | Landing page, docs, demos |
 
