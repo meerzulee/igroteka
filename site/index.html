@@ -108,9 +108,33 @@
     .filelist div { display:flex; justify-content:space-between; }
     .ok { color: #0a7a2a; } .bad { color: #b02020; }
     progress { width: 100%; }
+    /* boot screen — original art, XP-era vibe */
+    #boot { position: fixed; inset: 0; background: #000; z-index: 9999;
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; gap: 48px; }
+    #boot.hidden { display: none; }
+    #bootLogo { text-align: center; color: #fff; font-size: 42px;
+      font-weight: bold; font-family: Tahoma, sans-serif; }
+    #bootLogo .mark { font-size: 54px; display: block; margin-bottom: 10px; }
+    #bootLogo small { display: block; font-size: 14px; font-weight: normal;
+      color: #9aa2b8; margin-top: 6px; letter-spacing: 1px; }
+    #bootBar { width: 220px; height: 16px; border: 2px solid #7d7d7d;
+      border-radius: 8px; overflow: hidden; position: relative; }
+    #bootBar .blocks { position: absolute; top: 2px; left: -60px; display: flex; gap: 4px;
+      animation: bootscroll 1.6s linear infinite; }
+    #bootBar .blocks span { width: 12px; height: 8px; border-radius: 2px;
+      background: linear-gradient(#7ab1f5, #2b63cf); }
+    @keyframes bootscroll { from { left: -60px; } to { left: 236px; } }
   </style>
 </head>
 <body>
+  <div id="boot" class="hidden">
+    <div id="bootLogo">
+      <span class="mark">🕹️</span>
+      Igroteka<small>игротека · the gaming café</small>
+    </div>
+    <div id="bootBar"><div class="blocks"><span></span><span></span><span></span></div></div>
+  </div>
   <div id="desktop"></div>
 
   <div id="startMenu">
@@ -120,7 +144,7 @@
     </div>
     <div id="smCols">
       <div id="smLeft">
-        <div class="item" data-open="setup"><span class="ig">💿</span>Install C&amp;C Generals: Zero Hour</div>
+        <div class="item" data-open="setup" id="smSetup"><span class="ig">💿</span>Install C&amp;C Generals: Zero Hour</div>
         <div class="item" data-open="zh" style="display:none" id="smPlay"><span class="ig">🎖️</span>C&amp;C Generals: Zero Hour</div>
         <div class="smSep"></div>
         <div class="item" data-open="uninstall" style="display:none" id="smUninstall"><span class="ig">🗑️</span>Uninstall Zero Hour</div>
@@ -384,6 +408,8 @@ async function openUninstall() {
     if (icon) icon.remove();
     document.getElementById('smPlay').style.display = 'none';
     document.getElementById('smUninstall').style.display = 'none';
+    document.getElementById('setupIcon').style.display = '';
+    document.getElementById('smSetup').style.display = '';
     render(`<h3>Uninstalled ✓</h3>
       <p><b>C&amp;C Generals: Zero Hour</b> has been removed from this browser.</p>`,
       `<button id="closeU">Finish</button>`);
@@ -393,18 +419,21 @@ async function openUninstall() {
 }
 
 // ---------- desktop layout ----------
-addIcon('setup', '💿', 'Install C&C Generals Zero Hour', 24, 24, openSetup);
+const setupIcon = addIcon('setup', '💿', 'Install C&C Generals Zero Hour', 24, 24, openSetup);
+setupIcon.id = 'setupIcon';
 addIcon('about', '📄', 'About Igroteka', 24, 130, openAbout);
 
 async function placeGameIcon() {
+  document.getElementById('setupIcon').style.display = 'none';
+  document.getElementById('smSetup').style.display = 'none';
+  document.getElementById('smPlay').style.display = '';
+  document.getElementById('smUninstall').style.display = '';
   if (document.getElementById('zhIcon')) return;
   // Use the game's own icon if the user's install provided one (never shipped by us)
   const url = await gameIconURL();
   const glyph = url ? `<img src="${url}" alt="">` : '🎖️';
-  const el = addIcon('zh', glyph, 'C&C Generals Zero Hour', 24, 236, () => location.href = 'play/zh/');
+  const el = addIcon('zh', glyph, 'C&C Generals Zero Hour', 24, 24, () => location.href = 'play/zh/');
   el.id = 'zhIcon';
-  document.getElementById('smPlay').style.display = '';
-  document.getElementById('smUninstall').style.display = '';
 }
 if (localStorage.getItem('zh-installed')) placeGameIcon();
 
@@ -432,6 +461,50 @@ document.getElementById('footOff').onclick = () => {
   setTimeout(() => { document.body.style.filter = ''; }, 1800);
   startMenu.style.display = 'none';
 };
+
+// ---------- boot screen + startup chime ----------
+function playChime() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const master = ctx.createGain();
+    master.gain.value = 0.22;
+    master.connect(ctx.destination);
+    // Original composition — a soft rising four-note pad (not the MS chime)
+    const notes = [[523.25, 0.00], [659.25, 0.12], [783.99, 0.24], [1046.5, 0.40]];
+    for (const [freq, t] of notes) {
+      const o = ctx.createOscillator(); o.type = 'triangle'; o.frequency.value = freq;
+      const o2 = ctx.createOscillator(); o2.type = 'sine'; o2.frequency.value = freq / 2;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0, ctx.currentTime + t);
+      g.gain.linearRampToValueAtTime(0.8, ctx.currentTime + t + 0.06);
+      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + t + 1.9);
+      o.connect(g); o2.connect(g); g.connect(master);
+      o.start(ctx.currentTime + t); o2.start(ctx.currentTime + t);
+      o.stop(ctx.currentTime + t + 2); o2.stop(ctx.currentTime + t + 2);
+    }
+    return true;
+  } catch { return false; }
+}
+
+const boot = document.getElementById('boot');
+if (!sessionStorage.getItem('booted')) {
+  boot.classList.remove('hidden');
+  sessionStorage.setItem('booted', '1');
+  setTimeout(() => {
+    boot.classList.add('hidden');
+    // Autoplay policy: chime needs a prior user gesture; if none yet, arm
+    // a one-shot so the first click on the desktop plays it.
+    if (!playChimeArmed()) {
+      const arm = () => { playChime(); removeEventListener('pointerdown', arm); };
+      addEventListener('pointerdown', arm);
+    }
+  }, 2800);
+}
+function playChimeArmed() {
+  // navigator.userActivation is the honest check for a prior gesture
+  if (navigator.userActivation && navigator.userActivation.hasBeenActive) return playChime();
+  return false;
+}
 
 const clock = document.getElementById('clock');
 setInterval(() => {
