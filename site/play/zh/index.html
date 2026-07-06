@@ -2,6 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <title>Zero Hour — Igroteka</title>
   <link rel="stylesheet" href="../../xp.css">
   <style>
@@ -16,6 +19,21 @@
        No object-fit — SDL maps the mouse across the whole element, so the
        element must be exactly as big as the picture. */
     canvas { background:#000; }
+    /* Fullscreen toggle — faint until hovered; hidden where the API is
+       unavailable (iPhone Safari: use Add to Home Screen instead). */
+    #fsbtn { position:fixed; right:10px; bottom:10px; z-index:4; width:34px; height:34px;
+      background:rgba(20,30,50,.55); border:1px solid rgba(120,170,240,.4); border-radius:4px;
+      color:#cfd2dd; font-size:18px; line-height:32px; text-align:center; cursor:pointer;
+      opacity:.35; transition:opacity .2s; user-select:none; }
+    #fsbtn:hover { opacity:1; }
+    /* Mobile fullscreen nag — XP dialog shown whenever a touch device plays
+       windowed; the button provides the user gesture fullscreen requires. */
+    #fsnag { display:none; position:fixed; inset:0; z-index:9;
+             align-items:center; justify-content:center; background:rgba(0,0,0,.45); }
+    #fsnag .window { width:300px; box-shadow:4px 4px 16px rgba(0,0,0,.55); }
+    #fsnag .body { padding:16px 14px; background:#fff; font-size:12px;
+                   line-height:1.5; color:#000; }
+    #fsnag .btns { display:flex; justify-content:center; gap:8px; padding:10px; }
     /* Zero Hour-style loading screen — original tactical art, no game assets */
     #loader { position:fixed; inset:0; z-index:5; overflow:hidden; opacity:1;
               transition: opacity .6s; color:#c9d4e0;
@@ -104,6 +122,17 @@
   <div id="stage">
     <canvas id="canvas" width="1024" height="768" oncontextmenu="event.preventDefault()"></canvas>
   </div>
+  <div id="fsbtn" title="Fullscreen">⛶</div>
+  <div id="fsnag">
+    <div class="window">
+      <div class="title-bar">
+        <div class="title-bar-text">C&amp;C Generals: Zero Hour</div>
+      </div>
+      <div class="body">Zero Hour plays best fullscreen on a phone —
+        the whole screen becomes the battlefield.</div>
+      <div class="btns"><button id="fsnagGo">Go fullscreen</button></div>
+    </div>
+  </div>
   <div id="crash">
     <div class="window">
       <div class="title-bar">
@@ -126,6 +155,43 @@ import { ZH_MANIFEST, ZH_CURSORS, ZH_OPTIONAL, opfsInventory, missingFiles,
          opfsReadFile, loadingImageURL, nativeBarAtlas, drawNativeBar,
          setGameFavicon } from '../../igroteka.js?v=14';
 setGameFavicon();
+
+// Fullscreen toggle. documentElement (not the canvas) so overlays like the
+// crash dialog stay visible; fitCanvas refits via the resize event.
+const fsbtn = document.getElementById('fsbtn');
+const fsAvailable = !!(document.fullscreenEnabled || document.webkitFullscreenEnabled);
+const inFullscreen = () => !!(document.fullscreenElement || document.webkitFullscreenElement);
+const enterFullscreen = () => {
+  const el = document.documentElement;
+  (el.requestFullscreen || el.webkitRequestFullscreen).call(el, { navigationUI: 'hide' });
+};
+if (!fsAvailable) {
+  fsbtn.style.display = 'none';
+} else {
+  fsbtn.addEventListener('click', () => {
+    if (inFullscreen())
+      (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    else
+      enterFullscreen();
+  });
+}
+
+// Touch devices get nagged into fullscreen (XP-politely): the game wants the
+// whole screen, and re-entering fullscreen needs a user gesture — the dialog
+// button provides it. Reappears whenever the user exits fullscreen.
+const fsnag = document.getElementById('fsnag');
+const isTouch = matchMedia('(pointer: coarse)').matches;
+let gameRevealed = false;
+function syncFsNag() {
+  if (!isTouch || !fsAvailable || !gameRevealed) return;
+  fsnag.style.display = inFullscreen() ? 'none' : 'flex';
+}
+document.getElementById('fsnagGo').addEventListener('click', () => {
+  fsnag.style.display = 'none';
+  enterFullscreen();
+});
+addEventListener('fullscreenchange', syncFsNag);
+addEventListener('webkitfullscreenchange', syncFsNag);
 
 const msg = document.getElementById('msg');
 const fill = document.getElementById('fill');
@@ -245,6 +311,8 @@ function hideLoader() {
   if (tipTimer) clearInterval(tipTimer);
   loader.classList.add('hidden');
   setTimeout(() => { loader.style.display = 'none'; }, 700);
+  gameRevealed = true;
+  syncFsNag();
 }
 
 // dir -> wasm FS destination
@@ -382,7 +450,7 @@ window.Module = {
   canvas: document.getElementById('canvas'),
   // Stable version tag so the 9MB wasm caches between runs — Date.now() here
   // forced a full re-download and recompile on every single load.
-  locateFile: (p) => p + '?v=15',
+  locateFile: (p) => p + '?v=17',
   arguments: ['-win'],
   print: logAndReveal,
   printErr: logAndReveal,
@@ -459,7 +527,7 @@ window.Module = {
 };
 
 const s = document.createElement('script');
-s.src = './GeneralsXZH.js?v=15';
+s.src = './GeneralsXZH.js?v=17';
 document.body.appendChild(s);
 </script>
 </body>
