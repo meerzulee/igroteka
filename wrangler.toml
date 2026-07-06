@@ -1,0 +1,10 @@
+name = "igroteka"
+compatibility_date = "2026-07-01"
+
+# Custom domain: igroteka.mrz.sh (zone mrz.sh on this Cloudflare account)
+routes = [
+  { pattern = "igroteka.mrz.sh", custom_domain = true }
+]
+
+[assets]
+directory = "./site"
