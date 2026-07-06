@@ -7,8 +7,13 @@
     html, body { margin:0; background:#000; color:#cfd2dd; overflow:hidden;
                  font: 13px/1.5 "Segoe UI", Roboto, sans-serif; }
     #stage { display:flex; justify-content:center; align-items:center;
-             min-height:100vh; }
-    canvas { width:1024px; height:768px; max-width:100vw; background:#000; }
+             min-height:100vh; padding:14px; box-sizing:border-box; }
+    /* Scale down to fit the window (4:3 kept via the canvas intrinsic ratio)
+       instead of clipping — a flush-cropped top row reads as a bug. */
+    canvas { width:auto; height:auto;
+             max-width:min(1024px, 100%);
+             max-height:min(768px, calc(100vh - 28px));
+             background:#000; }
     /* Zero Hour-style loading screen — original tactical art, no game assets */
     #loader { position:fixed; inset:0; z-index:5; overflow:hidden; opacity:1;
               transition: opacity .6s; color:#c9d4e0;
