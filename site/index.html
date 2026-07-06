@@ -52,13 +52,50 @@
     #clock { color: #fff; font-size: 11px; padding: 0 10px; border-left: 1px solid rgba(255,255,255,.3);
              background: linear-gradient(#1d9ede, #1372ba); height: 100%; display:flex; align-items:center; }
     #startMenu {
-      position: absolute; bottom: 30px; left: 2px; width: 260px; display: none;
-      background: #fff; border: 1px solid #1941a5; box-shadow: 4px 4px 14px rgba(0,0,0,.4);
+      position: absolute; bottom: 30px; left: 0; width: 400px; display: none;
+      border: 1px solid #0f2f7c; border-bottom: 0;
+      border-radius: 6px 6px 0 0; overflow: hidden;
+      box-shadow: 4px -2px 14px rgba(0,0,0,.45);
+      background: #4282d6;
     }
-    #startMenu header { background: linear-gradient(#2f71c9, #1941a5); color:#fff;
-      padding: 10px 12px; font-weight: bold; font-size: 14px; }
-    #startMenu .item { padding: 8px 12px; font-size: 12px; cursor: pointer; display:flex; gap:8px; }
-    #startMenu .item:hover { background: #316ac5; color: #fff; }
+    #smHeader {
+      display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+      background: linear-gradient(#3c8af0 0%, #2b63cf 60%, #245bc4 100%);
+      border-bottom: 2px solid #e59700;
+    }
+    #smHeader .avatar {
+      width: 42px; height: 42px; border-radius: 6px; background: #fff;
+      border: 2px solid #9cc6ee; display: flex; align-items: center;
+      justify-content: center; font-size: 26px;
+      box-shadow: inset 0 0 3px rgba(0,0,0,.3);
+    }
+    #smHeader .uname { color: #fff; font-size: 14px; font-weight: bold;
+      text-shadow: 1px 1px 1px rgba(0,0,0,.4); }
+    #smCols { display: flex; }
+    #smLeft { flex: 1.15; background: #fff; padding: 6px 0; min-height: 240px;
+      display: flex; flex-direction: column; }
+    #smRight { flex: 1; background: #d3e5fa; border-left: 1px solid #95bdee;
+      padding: 6px 0; min-height: 240px; }
+    .item { padding: 7px 10px; font-size: 12px; cursor: pointer;
+      display: flex; gap: 8px; align-items: center; color: #0a246a; }
+    .item .ig { font-size: 22px; width: 26px; text-align: center; }
+    .item:hover { background: #316ac5; color: #fff; }
+    #smRight .item { font-weight: bold; }
+    .smSep { border-top: 1px solid #d9d5c9; margin: 4px 10px; }
+    #smRight .smSep { border-top: 1px solid #a8c8ea; }
+    #smLeft .spacer { flex: 1; }
+    #smFooter {
+      display: flex; justify-content: flex-end; gap: 14px; padding: 7px 12px;
+      background: linear-gradient(#3c8af0 0%, #2b63cf 60%, #245bc4 100%);
+      border-top: 1px solid #1941a5;
+    }
+    #smFooter .foot { color: #fff; font-size: 12px; cursor: pointer;
+      display: flex; align-items: center; gap: 6px; }
+    #smFooter .foot .k { width: 22px; height: 22px; border-radius: 4px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; color: #fff; }
+    #smFooter .off .k { background: linear-gradient(#f0a44b, #d9822b); }
+    #smFooter .foot:hover { text-decoration: underline; }
     .wizardArt { width: 110px; background: linear-gradient(#1941a5, #2f71c9);
       display:flex; align-items:flex-end; justify-content:center; font-size:44px; padding-bottom:14px; }
     .wizardStep { display: flex; min-height: 240px; }
@@ -77,11 +114,32 @@
   <div id="desktop"></div>
 
   <div id="startMenu">
-    <header>Igroteka <span style="font-weight:normal">игротека</span></header>
-    <div class="item" data-open="setup">💿 Install C&amp;C Generals: Zero Hour</div>
-    <div class="item" data-open="zh" style="display:none" id="smPlay">🎖️ C&amp;C Generals: Zero Hour</div>
-    <div class="item" data-open="uninstall" style="display:none" id="smUninstall">🗑️ Uninstall C&amp;C Generals: Zero Hour</div>
-    <div class="item" data-open="about">📄 About Igroteka</div>
+    <div id="smHeader">
+      <div class="avatar">🕹️</div>
+      <div class="uname">Гость</div>
+    </div>
+    <div id="smCols">
+      <div id="smLeft">
+        <div class="item" data-open="setup"><span class="ig">💿</span>Install C&amp;C Generals: Zero Hour</div>
+        <div class="item" data-open="zh" style="display:none" id="smPlay"><span class="ig">🎖️</span>C&amp;C Generals: Zero Hour</div>
+        <div class="smSep"></div>
+        <div class="item" data-open="uninstall" style="display:none" id="smUninstall"><span class="ig">🗑️</span>Uninstall Zero Hour</div>
+        <div class="spacer"></div>
+        <div class="smSep"></div>
+        <div class="item"><span class="ig">📦</span>All Programs <span style="margin-left:auto">▸</span></div>
+      </div>
+      <div id="smRight">
+        <div class="item" data-open="about"><span class="ig">📄</span>About Igroteka</div>
+        <div class="item"><span class="ig">🎮</span>My Games</div>
+        <div class="item"><span class="ig">🖼️</span>My Screenshots</div>
+        <div class="smSep"></div>
+        <div class="item"><span class="ig">⚙️</span>Settings</div>
+        <div class="item"><span class="ig">❓</span>Help and Support</div>
+      </div>
+    </div>
+    <div id="smFooter">
+      <div class="foot off" id="footOff"><span class="k">⏻</span>Turn Off Computer</div>
+    </div>
   </div>
 
   <div id="taskbar">
@@ -92,7 +150,7 @@
 
 <script type="module">
 import { classify, opfsWrite, opfsInventory, missingFiles, requestPersistence,
-         zipEntries, gameIconURL } from './igroteka.js?v=3';
+         zipEntries, gameIconURL } from './igroteka.js?v=4';
 
 // ---------- tiny window manager ----------
 const desktop = document.getElementById('desktop');
@@ -368,6 +426,12 @@ startMenu.addEventListener('click', (e) => {
   if (item.dataset.open === 'zh') location.href = 'play/zh/';
   if (item.dataset.open === 'uninstall') openUninstall();
 });
+
+document.getElementById('footOff').onclick = () => {
+  document.body.style.transition = 'filter 1.2s'; document.body.style.filter = 'brightness(0)';
+  setTimeout(() => { document.body.style.filter = ''; }, 1800);
+  startMenu.style.display = 'none';
+};
 
 const clock = document.getElementById('clock');
 setInterval(() => {
