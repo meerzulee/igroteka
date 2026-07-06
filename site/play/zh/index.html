@@ -85,6 +85,10 @@ window.Module = {
   printErr: (t) => console.log(t),
   onAbort: (w) => { msg.textContent = 'Engine aborted: ' + w; loader.classList.remove('hidden'); },
   onRuntimeInitialized: () => { loader.classList.add('hidden'); },
+  // EXIT GAME in the menu ends the engine — return to the desktop like
+  // closing a fullscreen game dropped you back to Windows.
+  onExit: () => { location.href = '../../'; },
+  quit: () => { location.href = '../../'; },
   preRun: [function () {
     ENV.CNC_GENERALS_ZH_PATH = '/game';
     ENV.CNC_GENERALS_PATH = '/game-base';

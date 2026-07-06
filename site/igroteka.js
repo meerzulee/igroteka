@@ -13,11 +13,18 @@ export const ZH_MANIFEST = {
   scripts: ['SkirmishScripts.scb', 'MultiplayerScripts.scb', 'Scripts.ini'],
 };
 
+// Nice-to-have files: imported when present, never block installation.
+// The game's own icon comes from the USER'S copy — we never ship EA art.
+export const ZH_OPTIONAL = {
+  icons: ['GeneralsZH.ico', 'Generals.ico'],
+};
+
 const norm = (name) => name.toLowerCase();
 
 const zhSet = new Set(ZH_MANIFEST.zh.map(norm));
 const baseSet = new Set(ZH_MANIFEST.base.map(norm));
 const scriptSet = new Set(ZH_MANIFEST.scripts.map(norm));
+const iconSet = new Set(ZH_OPTIONAL.icons.map(norm));
 
 // Classify a filename (any path) into its OPFS bucket, or null if not needed.
 export function classify(path) {
@@ -25,14 +32,26 @@ export function classify(path) {
   if (zhSet.has(name)) return { dir: 'zh', name: canonical(name) };
   if (baseSet.has(name)) return { dir: 'base', name: canonical(name) };
   if (scriptSet.has(name)) return { dir: 'scripts', name: canonical(name) };
+  if (iconSet.has(name)) return { dir: 'icons', name: canonical(name) };
   return null;
 }
 
 function canonical(lower) {
-  for (const list of Object.values(ZH_MANIFEST)) {
+  for (const list of [...Object.values(ZH_MANIFEST), ...Object.values(ZH_OPTIONAL)]) {
     for (const f of list) if (norm(f) === lower) return f;
   }
   return lower;
+}
+
+// Blob URL for the game's own icon if the user's install provided one.
+export async function gameIconURL() {
+  for (const name of ZH_OPTIONAL.icons) {
+    try {
+      const f = await opfsReadFile('icons', name);
+      return URL.createObjectURL(f);
+    } catch { /* try next */ }
+  }
+  return null;
 }
 
 export async function opfsRoot() {
@@ -63,7 +82,7 @@ export async function opfsWrite(dir, name, blobOrBuffer, onProgress) {
 
 // Inventory of what's already imported. Returns {zh:[names], base:[], scripts:[]}
 export async function opfsInventory() {
-  const out = { zh: [], base: [], scripts: [] };
+  const out = { zh: [], base: [], scripts: [], icons: [] };
   const root = await opfsRoot();
   for (const dir of Object.keys(out)) {
     try {

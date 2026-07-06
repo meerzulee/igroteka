@@ -3,40 +3,332 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Igroteka — the 2000s gaming café, in your browser</title>
+  <title>Igroteka</title>
+  <link rel="stylesheet" href="xp.css">
   <style>
-    html, body { margin:0; background:#101116; color:#cfd2dd;
-                 font: 16px/1.6 -apple-system, "Segoe UI", Roboto, sans-serif; }
-    main { max-width: 680px; margin: 0 auto; padding: 80px 20px; text-align:center; }
-    h1 { font-size: 40px; color:#fff; margin: 0; }
-    .ru { color:#e8b34b; }
-    p.tag { color:#8b90a3; font-size: 18px; }
-    .games { margin-top: 40px; display:flex; justify-content:center; }
-    .game { background:#1a1c26; border:1px solid #2a2d3a; border-radius:14px;
-            padding:24px 28px; text-align:left; max-width:380px; }
-    .game h2 { margin:0 0 6px; color:#fff; font-size:20px; }
-    .game p { color:#a7abbd; font-size:14px; margin:0 0 16px; }
-    .game a { display:inline-block; background:#e8b34b; color:#181818;
-              text-decoration:none; font-weight:600; padding:10px 18px;
-              border-radius:8px; }
-    footer { margin-top:60px; color:#5c6072; font-size:13px; }
+    /* Original XP-inspired theme. No Microsoft assets: wallpaper is CSS art,
+       icons are emoji/SVG, styles come from XP.css (MIT). */
+    html, body { height: 100%; margin: 0; overflow: hidden; }
+    body {
+      font-family: "Pixelated MS Sans Serif", Tahoma, sans-serif;
+      background:
+        radial-gradient(ellipse 120% 60% at 70% 108%, #4a8f2a 0%, #3a7a20 28%, transparent 60%),
+        radial-gradient(ellipse 90% 45% at 20% 112%, #5aa332 0%, #47892a 30%, transparent 62%),
+        linear-gradient(#2f71c9 0%, #5b9ae0 45%, #9cc6ee 70%, #cfe6f7 100%);
+      user-select: none;
+    }
+    #desktop { position: absolute; inset: 0 0 30px 0; }
+    .icon {
+      width: 84px; text-align: center; color: #fff; cursor: default;
+      position: absolute; padding: 4px;
+      text-shadow: 1px 1px 2px rgba(0,0,0,.8); font-size: 11px;
+    }
+    .icon .glyph { font-size: 34px; line-height: 1.1; filter: drop-shadow(1px 2px 2px rgba(0,0,0,.4)); }
+    .icon .glyph img { width: 36px; height: 36px; image-rendering: pixelated; }
+    .icon.selected { background: rgba(49,106,197,.45); outline: 1px dotted #fff; }
+    .window { position: absolute; min-width: 380px; box-shadow: 4px 4px 16px rgba(0,0,0,.45); }
+    .window .title-bar { cursor: default; }
+    .window-body { background: #ece9d8; }
+    #taskbar {
+      position: absolute; left: 0; right: 0; bottom: 0; height: 30px;
+      background: linear-gradient(#3168d5 0%, #4993e6 6%, #2b63cf 50%, #1941a5 100%);
+      display: flex; align-items: center; gap: 6px; padding: 0 4px 0 0;
+      border-top: 1px solid #0f2f7c;
+    }
+    #startBtn {
+      height: 24px; margin: 0 2px; padding: 0 16px 0 10px; border-radius: 8px;
+      background: linear-gradient(#4bb04b 0%, #2d8a2d 50%, #1f6b1f 100%);
+      color: #fff; font-weight: bold; font-style: italic; font-size: 14px;
+      border: 0; box-shadow: inset 0 0 4px rgba(255,255,255,.5); cursor: pointer;
+    }
+    #tasks { flex: 1; display: flex; gap: 4px; }
+    .taskBtn { height: 22px; min-width: 140px; text-align: left; font-size: 11px; }
+    #clock { color: #fff; font-size: 11px; padding: 0 10px; border-left: 1px solid rgba(255,255,255,.3);
+             background: linear-gradient(#1d9ede, #1372ba); height: 100%; display:flex; align-items:center; }
+    #startMenu {
+      position: absolute; bottom: 30px; left: 2px; width: 260px; display: none;
+      background: #fff; border: 1px solid #1941a5; box-shadow: 4px 4px 14px rgba(0,0,0,.4);
+    }
+    #startMenu header { background: linear-gradient(#2f71c9, #1941a5); color:#fff;
+      padding: 10px 12px; font-weight: bold; font-size: 14px; }
+    #startMenu .item { padding: 8px 12px; font-size: 12px; cursor: pointer; display:flex; gap:8px; }
+    #startMenu .item:hover { background: #316ac5; color: #fff; }
+    .wizardArt { width: 110px; background: linear-gradient(#1941a5, #2f71c9);
+      display:flex; align-items:flex-end; justify-content:center; font-size:44px; padding-bottom:14px; }
+    .wizardStep { display: flex; min-height: 240px; }
+    .wizardMain { flex: 1; padding: 14px; font-size: 12px; }
+    .wizardMain h3 { margin-top: 0; }
+    .wizardBtns { display: flex; justify-content: flex-end; gap: 6px; padding: 10px 14px;
+      border-top: 1px solid #cfcabc; }
+    .filelist { background:#fff; border:1px inset #999; height:110px; overflow:auto;
+      font-size:11px; padding:4px; margin-top:8px; }
+    .filelist div { display:flex; justify-content:space-between; }
+    .ok { color: #0a7a2a; } .bad { color: #b02020; }
+    progress { width: 100%; }
   </style>
 </head>
 <body>
-<main>
-  <h1>Igroteka <span class="ru">игротека</span></h1>
-  <p class="tag">The 2000s gaming café, in your browser. Native ports, no streaming.
-     Bring your own game files — we never host them.</p>
-  <div class="games">
-    <div class="game">
-      <h2>C&amp;C Generals: Zero Hour</h2>
-      <p>The 2003 RTS classic, running as a native WebAssembly port on the
-         Dvijoke engine. Requires your own copy (Steam).</p>
-      <a href="onboard/">Bring your game →</a>
-    </div>
+  <div id="desktop"></div>
+
+  <div id="startMenu">
+    <header>Igroteka <span style="font-weight:normal">игротека</span></header>
+    <div class="item" data-open="setup">💿 Install C&amp;C Generals: Zero Hour</div>
+    <div class="item" data-open="zh" style="display:none" id="smPlay">🎖️ C&amp;C Generals: Zero Hour</div>
+    <div class="item" data-open="about">📄 About Igroteka</div>
   </div>
-  <footer>Not affiliated with or endorsed by EA. Engine ports are open source;
-    game assets stay yours, on your device.</footer>
-</main>
+
+  <div id="taskbar">
+    <button id="startBtn">игротека</button>
+    <div id="tasks"></div>
+    <div id="clock"></div>
+  </div>
+
+<script type="module">
+import { classify, opfsWrite, opfsInventory, missingFiles, requestPersistence,
+         zipEntries, gameIconURL } from './igroteka.js';
+
+// ---------- tiny window manager ----------
+const desktop = document.getElementById('desktop');
+const tasks = document.getElementById('tasks');
+let zTop = 10;
+const openWindows = new Map();  // id -> {el, task}
+
+function makeWindow(id, title, w, h) {
+  // Singleton per app id: re-focus instead of duplicating
+  const existing = openWindows.get(id);
+  if (existing && document.body.contains(existing.el)) {
+    existing.el.style.display = '';
+    existing.el.style.zIndex = ++zTop;
+    return null;
+  }
+  const el = document.createElement('div');
+  el.className = 'window';
+  el.style.width = w + 'px';
+  el.style.left = (60 + Math.random() * 120) + 'px';
+  el.style.top = (40 + Math.random() * 60) + 'px';
+  el.innerHTML = `
+    <div class="title-bar">
+      <div class="title-bar-text">${title}</div>
+      <div class="title-bar-controls">
+        <button aria-label="Minimize"></button>
+        <button aria-label="Close"></button>
+      </div>
+    </div>
+    <div class="window-body" style="margin:0"></div>`;
+  desktop.appendChild(el);
+
+  const task = document.createElement('button');
+  task.className = 'taskBtn';
+  task.textContent = title;
+  tasks.appendChild(task);
+
+  const focus = () => { el.style.zIndex = ++zTop; };
+  focus();
+  el.addEventListener('mousedown', focus);
+  task.onclick = () => { el.style.display = ''; focus(); };
+  el.querySelector('[aria-label="Minimize"]').onclick = () => { el.style.display = 'none'; };
+  el.querySelector('[aria-label="Close"]').onclick = () => { el.remove(); task.remove(); openWindows.delete(id); };
+  openWindows.set(id, { el, task });
+
+  // drag
+  const bar = el.querySelector('.title-bar');
+  bar.addEventListener('mousedown', (e) => {
+    const sx = e.clientX - el.offsetLeft, sy = e.clientY - el.offsetTop;
+    const move = (e) => { el.style.left = (e.clientX - sx) + 'px'; el.style.top = Math.max(0, e.clientY - sy) + 'px'; };
+    const up = () => { removeEventListener('mousemove', move); removeEventListener('mouseup', up); };
+    addEventListener('mousemove', move); addEventListener('mouseup', up);
+  });
+  return el.querySelector('.window-body');
+}
+
+// ---------- desktop icons ----------
+function addIcon(id, glyph, label, x, y, onOpen) {
+  const el = document.createElement('div');
+  el.className = 'icon'; el.style.left = x + 'px'; el.style.top = y + 'px';
+  el.innerHTML = `<div class="glyph">${glyph}</div>${label}`;
+  el.addEventListener('click', () => {
+    document.querySelectorAll('.icon').forEach(i => i.classList.remove('selected'));
+    el.classList.add('selected');
+  });
+  el.addEventListener('dblclick', onOpen);
+  desktop.appendChild(el);
+  return el;
+}
+
+// ---------- apps ----------
+function openAbout() {
+  const body = makeWindow('about', 'About Igroteka', 420);
+  if (!body) return;
+  body.innerHTML = `<div style="padding:14px;font-size:12px">
+    <p><b>Igroteka</b> — the 2000s gaming café, in your browser.</p>
+    <p>Real native game ports (WebAssembly, Dvijoke engine), no streaming.
+       Your game files stay on your device — Igroteka never uploads or hosts them.</p>
+    <p>Not affiliated with or endorsed by EA or Microsoft.</p></div>`;
+}
+
+async function openSetup() {
+  const body = makeWindow('setup', 'Setup — C&C Generals: Zero Hour', 520);
+  if (!body) return;
+  let stepEl;
+  const render = (html, btns) => {
+    body.innerHTML = `<div class="wizardStep"><div class="wizardArt">💿</div>
+      <div class="wizardMain">${html}</div></div><div class="wizardBtns">${btns}</div>`;
+    stepEl = body.querySelector('.wizardMain');
+  };
+
+  const stepWelcome = () => {
+    render(`<h3>Welcome to the Zero Hour Setup Wizard</h3>
+      <p>This wizard installs <b>Command &amp; Conquer Generals: Zero Hour</b>
+      into your browser's private storage.</p>
+      <p>You need your own copy of the game (Steam). Files are read locally —
+      nothing is uploaded.</p>`,
+      `<button id="next">Next &gt;</button>`);
+    body.querySelector('#next').onclick = stepSource;
+  };
+
+  const stepSource = () => {
+    render(`<h3>Insert your game files</h3>
+      <p>Choose where your Zero Hour installation lives:</p>
+      <p style="margin:14px 0 4px"><button id="srcFolder" style="width:100%">📁 From this computer (Steam folder)…</button></p>
+      <p style="margin:4px 0"><button id="srcZip" style="width:100%">🗜️ From an asset pack (.zip)…</button></p>
+      <p style="margin:4px 0"><button disabled style="width:100%">☁️ From Google Drive / Dropbox (soon)</button></p>
+      <p style="font-size:11px;color:#555">Steam path: steamapps/common/Command and Conquer Generals Zero Hour<br>
+      iCloud Drive works through either picker.</p>
+      <input type="file" id="fbFolder" webkitdirectory multiple style="display:none">
+      <input type="file" id="fbZip" accept=".zip" style="display:none">`,
+      `<button id="back">&lt; Back</button>`);
+    body.querySelector('#back').onclick = stepWelcome;
+
+    const fbFolder = body.querySelector('#fbFolder');
+    const fbZip = body.querySelector('#fbZip');
+
+    body.querySelector('#srcFolder').onclick = async () => {
+      if (window.showDirectoryPicker) {
+        try {
+          const dir = await window.showDirectoryPicker({ mode: 'read' });
+          const files = [];
+          let total = 0;
+          async function walk(d, prefix) {
+            for await (const [name, h] of d.entries()) {
+              const rel = prefix ? `${prefix}/${name}` : name;
+              if (h.kind === 'file') {
+                if (classify(rel)) { const f = await h.getFile(); files.push({ rel, size: f.size, blob: async () => f }); total += f.size; }
+              } else if (prefix.split('/').length < 3) await walk(h, rel);
+            }
+          }
+          await walk(dir, '');
+          stepCopy(files, total);
+        } catch (e) { if (e.name !== 'AbortError') throw e; }
+      } else fbFolder.click();
+    };
+    fbFolder.onchange = () => {
+      const files = [...fbFolder.files]
+        .map(f => ({ rel: f.webkitRelativePath || f.name, size: f.size, blob: async () => f }))
+        .filter(e => classify(e.rel));
+      stepCopy(files, files.reduce((s, e) => s + e.size, 0));
+    };
+    body.querySelector('#srcZip').onclick = () => fbZip.click();
+    fbZip.onchange = async () => {
+      const file = fbZip.files[0];
+      if (!file) return;
+      const files = [];
+      let total = 0;
+      for await (const e of zipEntries(file))
+        if (classify(e.name)) { files.push({ rel: e.name, size: e.rawSize, blob: e.blob }); total += e.rawSize; }
+      stepCopy(files, total);
+    };
+  };
+
+  const stepCopy = async (files, total) => {
+    if (!files.length) {
+      render(`<h3>No game files found</h3><p>That location has none of the expected
+        archives. Pick the Zero Hour install folder itself.</p>`,
+        `<button id="back">&lt; Back</button>`);
+      body.querySelector('#back').onclick = stepSource;
+      return;
+    }
+    render(`<h3>Installing…</h3>
+      <p>Copying game files into browser storage. Please wait.</p>
+      <progress id="p" max="100" value="0"></progress>
+      <div class="filelist" id="list"></div>`, ``);
+    const list = stepEl.querySelector('#list');
+    const p = stepEl.querySelector('#p');
+    await requestPersistence();
+    let done = 0;
+    for (const f of files) {
+      const c = classify(f.rel);
+      const row = document.createElement('div');
+      row.innerHTML = `<span>${c.dir}/${c.name}</span><span>…</span>`;
+      list.appendChild(row); list.scrollTop = list.scrollHeight;
+      const blob = await f.blob();
+      await opfsWrite(c.dir, c.name, blob, (w) => { p.value = ((done + w) / total) * 100; });
+      done += f.size || blob.size;
+      p.value = (done / total) * 100;
+      row.lastChild.textContent = '✓'; row.lastChild.className = 'ok';
+    }
+    stepFinish();
+  };
+
+  const stepFinish = async () => {
+    const missing = missingFiles(await opfsInventory());
+    if (missing.length) {
+      render(`<h3>Almost there</h3><p>Still missing:</p>
+        <div class="filelist">${missing.map(m => `<div><span>${m}</span><span class="bad">missing</span></div>`).join('')}</div>
+        <p>Add them from another folder or pack.</p>`,
+        `<button id="back">&lt; Back</button>`);
+      body.querySelector('#back').onclick = stepSource;
+      return;
+    }
+    localStorage.setItem('zh-installed', '1');
+    placeGameIcon();
+    render(`<h3>Setup complete ✓</h3>
+      <p><b>C&amp;C Generals: Zero Hour</b> is installed. A shortcut has been
+      placed on your desktop.</p>`,
+      `<button id="play">Finish &amp; Play</button>`);
+    body.querySelector('#play').onclick = () => location.href = 'play/zh/';
+  };
+
+  stepWelcome();
+}
+
+// ---------- desktop layout ----------
+addIcon('setup', '💿', 'Install C&C Generals Zero Hour', 24, 24, openSetup);
+addIcon('about', '📄', 'About Igroteka', 24, 130, openAbout);
+
+async function placeGameIcon() {
+  if (document.getElementById('zhIcon')) return;
+  // Use the game's own icon if the user's install provided one (never shipped by us)
+  const url = await gameIconURL();
+  const glyph = url ? `<img src="${url}" alt="">` : '🎖️';
+  const el = addIcon('zh', glyph, 'C&C Generals Zero Hour', 24, 236, () => location.href = 'play/zh/');
+  el.id = 'zhIcon';
+  document.getElementById('smPlay').style.display = '';
+}
+if (localStorage.getItem('zh-installed')) placeGameIcon();
+
+// ---------- start menu + clock ----------
+const startMenu = document.getElementById('startMenu');
+document.getElementById('startBtn').onclick = (e) => {
+  e.stopPropagation();
+  startMenu.style.display = startMenu.style.display === 'block' ? 'none' : 'block';
+};
+document.addEventListener('click', (e) => {
+  if (!startMenu.contains(e.target)) startMenu.style.display = 'none';
+});
+startMenu.addEventListener('click', (e) => {
+  const item = e.target.closest('.item');
+  if (!item) return;
+  startMenu.style.display = 'none';
+  if (item.dataset.open === 'setup') openSetup();
+  if (item.dataset.open === 'about') openAbout();
+  if (item.dataset.open === 'zh') location.href = 'play/zh/';
+});
+
+const clock = document.getElementById('clock');
+setInterval(() => {
+  clock.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}, 1000);
+clock.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+</script>
 </body>
 </html>
