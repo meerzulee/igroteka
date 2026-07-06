@@ -132,3 +132,32 @@ vegetation, vehicles, effects, text.
   combo still off).
 - fillCaps advertises programmable shaders so the engine probes .vso/.pso —
   consider zeroing VertexShaderVersion/PixelShaderVersion in the bridge.
+
+
+## Session 2 final update — THE BLACK TERRAIN BUG IS FIXED
+
+Root cause (one bug, many symptoms): a D3D8 ownership-contract violation.
+GetSurfaceLevel must return TEXTURE-OWNED surfaces that survive a caller's
+Release(). Both d8web's Texture8 AND the COM bridge's BridgeTexture created a
+fresh object per call; the engine's D3DXFilterTexture (CompatLib) releases
+each level surface and keeps the pointer as the next mip's source. The freed
+wrapper's heap slot was recycled as the next level's wrapper, the mip filter
+degenerated into same-surface self-copies, and every mip past level 1 stayed
+zero-filled. Distant terrain (which samples higher mips) rendered black; the
+scrolling cloud stage sampled black cloud mips and darkened everything.
+
+Fixes: cache level surfaces on the texture in BOTH layers (d8web commit
+3156a1b, zh-web commit 48751c5). Cloud stage and terrain multi-pass blending
+restored — their earlier 'darkening' was this same bug.
+
+Debug tooling built along the way (all still in tree):
+- boot.html?args=... (engine CLI args), ?shadows=on|off, wasm cache-buster
+- [ATLAS_BANDS]/[ATLAS_MIP] atlas content histograms; /atlas_*.raw dump
+  drawable on a canvas via FS.readFile (the 'terrain inspector')
+- [FILTER_PASS]/[LSFS] mip-filter tracing, [TILE_FAIL]/[TILE_SHORT]
+- Native ground-truth capture: screencapture -l <windowID> (find ID via
+  Swift CGWindowListCopyWindowInfo)
+
+Remaining (minor): stencil support for shadow volumes (shadows=off default),
+white particle rect near explosions, UISABOTR_SKN name-mangling log spam.
+Next big test: skirmish with AI (SkirmishScripts.scb now staged, clock fixed).
