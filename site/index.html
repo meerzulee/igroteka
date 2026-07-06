@@ -84,6 +84,11 @@
     .smSep { border-top: 1px solid #d9d5c9; margin: 4px 10px; }
     #smRight .smSep { border-top: 1px solid #a8c8ea; }
     #smLeft .spacer { flex: 1; }
+    #allPrograms { position: relative; }
+    #apFlyout { display: none; position: absolute; left: 100%; bottom: 0;
+      width: 230px; background: #fff; border: 1px solid #7a99d6;
+      box-shadow: 3px 3px 10px rgba(0,0,0,.35); }
+    #allPrograms:hover #apFlyout { display: block; }
     #smFooter {
       display: flex; justify-content: flex-end; gap: 14px; padding: 7px 12px;
       background: linear-gradient(#3c8af0 0%, #2b63cf 60%, #245bc4 100%);
@@ -150,7 +155,13 @@
         <div class="item" data-open="uninstall" style="display:none" id="smUninstall"><span class="ig">🗑️</span>Uninstall Zero Hour</div>
         <div class="spacer"></div>
         <div class="smSep"></div>
-        <div class="item"><span class="ig">📦</span>All Programs <span style="margin-left:auto">▸</span></div>
+        <div class="item" id="allPrograms"><span class="ig">📦</span>All Programs <span style="margin-left:auto">▸</span>
+          <div id="apFlyout">
+            <div class="item" data-open="setup"><span class="ig">💿</span>Setup — Zero Hour</div>
+            <div class="item" data-open="zh"><span class="ig">🎖️</span>C&amp;C Generals: Zero Hour</div>
+            <div class="item" data-open="uninstall"><span class="ig">🗑️</span>Uninstall Zero Hour</div>
+          </div>
+        </div>
       </div>
       <div id="smRight">
         <div class="item" data-open="about"><span class="ig">📄</span>About Igroteka</div>
@@ -174,7 +185,7 @@
 
 <script type="module">
 import { classify, opfsWrite, opfsInventory, missingFiles, requestPersistence,
-         zipEntries, gameIconURL } from './igroteka.js?v=4';
+         zipEntries, gameIconURL, opfsReadFile } from './igroteka.js?v=5';
 
 // ---------- tiny window manager ----------
 const desktop = document.getElementById('desktop');
@@ -343,17 +354,29 @@ async function openSetup() {
     const list = stepEl.querySelector('#list');
     const p = stepEl.querySelector('#p');
     await requestPersistence();
+    const inv = await opfsInventory();
     let done = 0;
     for (const f of files) {
       const c = classify(f.rel);
       const row = document.createElement('div');
       row.innerHTML = `<span>${c.dir}/${c.name}</span><span>…</span>`;
       list.appendChild(row); list.scrollTop = list.scrollHeight;
-      const blob = await f.blob();
-      await opfsWrite(c.dir, c.name, blob, (w) => { p.value = ((done + w) / total) * 100; });
-      done += f.size || blob.size;
+      // Repair runs: skip files already imported (same name + size)
+      let skipped = false;
+      if ((inv[c.dir] || []).includes(c.name)) {
+        try {
+          const existing = await opfsReadFile(c.dir, c.name);
+          if (existing.size === f.size) skipped = true;
+        } catch { /* import fresh */ }
+      }
+      if (!skipped) {
+        const blob = await f.blob();
+        await opfsWrite(c.dir, c.name, blob, (w) => { p.value = ((done + w) / total) * 100; });
+      }
+      done += f.size;
       p.value = (done / total) * 100;
-      row.lastChild.textContent = '✓'; row.lastChild.className = 'ok';
+      row.lastChild.textContent = skipped ? '✓ (kept)' : '✓';
+      row.lastChild.className = 'ok';
     }
     stepFinish();
   };
@@ -428,7 +451,8 @@ async function placeGameIcon() {
   document.getElementById('smSetup').style.display = 'none';
   document.getElementById('smPlay').style.display = '';
   document.getElementById('smUninstall').style.display = '';
-  if (document.getElementById('zhIcon')) return;
+  const old = document.getElementById('zhIcon');
+  if (old) old.remove();
   // Use the game's own icon if the user's install provided one (never shipped by us)
   const url = await gameIconURL();
   const glyph = url ? `<img src="${url}" alt="">` : '🎖️';
