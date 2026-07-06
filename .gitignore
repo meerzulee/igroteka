@@ -27,6 +27,6 @@ compile_commands.json
 
 # Nested repos with their own git history:
 # - zh-web: GPL fork of GeneralsGameCode (Igroteka wasm branch)
-# - d8web: the Dvijoke engine repo (github.com/meerzulee/dvijoke)
+# - dvijoke: the Dvijoke engine repo (github.com/meerzulee/dvijoke)
 zh-web/
-d8web/
+dvijoke/

@@ -48,7 +48,7 @@ API calls. Adding WebGPU later = new WGSL emitter + new translator, nothing else
 
 | Component | License | Purpose |
 |---|---|---|
-| [`d8web`](https://github.com/meerzulee/dvijoke) | MIT | D3D8 → WebGL2/WebGPU translation layer — lives in the Dvijoke repo, checked out at `d8web/` |
+| [`d8web`](https://github.com/meerzulee/dvijoke) | MIT | D3D8 → WebGL2/WebGPU translation layer — lives in the Dvijoke repo, checked out at `dvijoke/d8web/` |
 | `zh-web` | GPL v3 | [GeneralsGameCode](https://github.com/TheSuperHackers/GeneralsGameCode) fork + Emscripten toolchain — together with `d8web` this is **Dvijoke** |
 | `cafe` | MIT | Lobby web app, WebRTC signaling, OPFS asset onboarding |
 | `site` | — | Landing page, docs, demos |
