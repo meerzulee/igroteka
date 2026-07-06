@@ -121,8 +121,8 @@
   </div>
 
 <script type="module">
-import { ZH_MANIFEST, opfsInventory, missingFiles, opfsReadFile, loadingImageURL,
-         nativeBarAtlas, drawNativeBar } from '../../igroteka.js?v=8';
+import { ZH_MANIFEST, ZH_CURSORS, opfsInventory, missingFiles, opfsReadFile,
+         loadingImageURL, nativeBarAtlas, drawNativeBar } from '../../igroteka.js?v=10';
 
 const msg = document.getElementById('msg');
 const fill = document.getElementById('fill');
@@ -231,6 +231,9 @@ const DEST = {
   zh: (n) => `/game/${n}`,
   base: (n) => `/game-base/${n}`,
   scripts: (n) => `/game/Data/Scripts/${n}`,
+  // SDL3Mouse opens Data/Cursors/<Texture>.ani relative to the process CWD;
+  // stage under / and mirror into /game in the copy loop to cover both.
+  cursors: (n) => `/Data/Cursors/${n}`,
 };
 
 async function sources() {
@@ -246,6 +249,11 @@ async function sources() {
           if (!r.ok) throw new Error(`${f}: HTTP ${r.status}`);
           return new Uint8Array(await r.arrayBuffer());
         }});
+    for (const f of ZH_CURSORS)
+      out.push({ dir: 'cursors', name: f, optional: true, load: async () => {
+        const r = await fetch(`/gamedata/Cursors/${f}`);
+        return r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
+      }});
     return out;
   }
   let inv;
@@ -273,6 +281,15 @@ async function sources() {
     for (const f of files)
       out.push({ dir, name: f, load: async () => {
         const file = await opfsReadFile(dir, f);
+        return new Uint8Array(await file.arrayBuffer());
+      }});
+  // Cursors are optional: absent on installs imported before the bucket
+  // existed — the game just keeps the web cursor until a re-import.
+  const haveCursors = new Set((inv.cursors || []).map((n) => n.toLowerCase()));
+  for (const f of ZH_CURSORS)
+    if (haveCursors.has(f.toLowerCase()))
+      out.push({ dir: 'cursors', name: f, optional: true, load: async () => {
+        const file = await opfsReadFile('cursors', f);
         return new Uint8Array(await file.arrayBuffer());
       }});
   return out;
@@ -354,6 +371,7 @@ window.Module = {
     ENV.CNC_GENERALS_PATH = '/game-base';
     ENV.HOME = '/home/web_user';
     FS.mkdir('/game'); FS.mkdir('/game-base'); FS.mkdirTree('/game/Data/Scripts');
+    FS.mkdirTree('/Data/Cursors'); FS.mkdirTree('/game/Data/Cursors');
     FS.mkdirTree('/fonts');
     const userDir = '/home/web_user/.local/share/GeneralsX/GeneralsZH';
     FS.mkdirTree(userDir);
@@ -378,7 +396,13 @@ window.Module = {
       for (const f of files) {
         msg.textContent = `Loading ${f.name}…`;
         const data = await f.load();
-        FS.writeFile(DEST[f.dir](f.name), data);
+        if (data) {
+          FS.writeFile(DEST[f.dir](f.name), data);
+          // Mirror cursors into the game dir too — CWD varies by engine path.
+          if (f.dir === 'cursors') FS.writeFile(`/game/Data/Cursors/${f.name}`, data);
+        } else if (!f.optional) {
+          throw new Error(`${f.name}: no data`);
+        }
         bar.value = (++done / files.length) * 100;
       }
       msg.textContent = 'Starting engine…';

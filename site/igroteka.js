@@ -13,6 +13,21 @@ export const ZH_MANIFEST = {
   scripts: ['SkirmishScripts.scb', 'MultiplayerScripts.scb', 'Scripts.ini'],
 };
 
+// The 34 cursor files Mouse.ini's Texture entries resolve to. Canonical
+// casing matters: the wasm FS is case-sensitive and the engine asks for
+// exactly Data/Cursors/<Texture>.ani (install dirs mix the case freely).
+export const ZH_CURSORS = [
+  'SCCAttMov.ani', 'SCCAttack.ani', 'SCCCashHack.ani', 'SCCEnter.ani',
+  'SCCExit.ani', 'SCCFriendly.ani', 'SCCHostile.ani', 'SCCHostile2.ani',
+  'SCCHostile3.ani', 'SCCKnifeAttack.ani', 'SCCMove.ani', 'SCCNoAction.ani',
+  'SCCNoBomb.ani', 'SCCNoKnife.ani', 'SCCPlaceBeacon.ani', 'SCCPointer.ani',
+  'SCCRallyPnt.ani', 'SCCRemoteChg.ani', 'SCCRepair.ani', 'SCCResumeC.ani',
+  'SCCSDIUplink.ani', 'SCCScroll0.ani', 'SCCScroll1.ani', 'SCCScroll2.ani',
+  'SCCScroll3.ani', 'SCCScroll4.ani', 'SCCScroll5.ani', 'SCCScroll6.ani',
+  'SCCScroll7.ani', 'SCCSelect.ani', 'SCCSniper.ani', 'SCCTNTAttack.ani',
+  'SCCTimedChg.ani', 'SCCWaypoint.ani',
+];
+
 // Nice-to-have files: imported when present, never block installation.
 // The game's own icon comes from the USER'S copy — we never ship EA art.
 export const ZH_OPTIONAL = {
@@ -20,6 +35,9 @@ export const ZH_OPTIONAL = {
   // The native install/loading splash — a plain 800x600 BMP the browser can
   // display directly. From the user's own files (never shipped by us).
   loading: ['Install_Final.bmp'],
+  // Native in-game mouse cursors (Data/Cursors). Optional so installs made
+  // before this bucket existed keep working — they just get the web cursor.
+  cursors: ZH_CURSORS,
 };
 
 const norm = (name) => name.toLowerCase();
@@ -29,6 +47,7 @@ const baseSet = new Set(ZH_MANIFEST.base.map(norm));
 const scriptSet = new Set(ZH_MANIFEST.scripts.map(norm));
 const iconSet = new Set(ZH_OPTIONAL.icons.map(norm));
 const loadingSet = new Set(ZH_OPTIONAL.loading.map(norm));
+const cursorFileSet = new Set(ZH_OPTIONAL.cursors.map(norm));
 
 // Classify a filename (any path) into its OPFS bucket, or null if not needed.
 export function classify(path) {
@@ -38,6 +57,7 @@ export function classify(path) {
   if (scriptSet.has(name)) return { dir: 'scripts', name: canonical(name) };
   if (iconSet.has(name)) return { dir: 'icons', name: canonical(name) };
   if (loadingSet.has(name)) return { dir: 'loading', name: canonical(name) };
+  if (cursorFileSet.has(name)) return { dir: 'cursors', name: canonical(name) };
   return null;
 }
 
@@ -118,7 +138,7 @@ export async function opfsWrite(dir, name, blobOrBuffer, onProgress) {
 
 // Inventory of what's already imported. Returns {zh:[names], base:[], scripts:[]}
 export async function opfsInventory() {
-  const out = { zh: [], base: [], scripts: [], icons: [], loading: [] };
+  const out = { zh: [], base: [], scripts: [], icons: [], loading: [], cursors: [] };
   const root = await opfsRoot();
   for (const dir of Object.keys(out)) {
     try {
