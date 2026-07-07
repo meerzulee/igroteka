@@ -157,7 +157,7 @@
 <script type="module">
 import { ZH_MANIFEST, ZH_CURSORS, ZH_OPTIONAL, opfsInventory, missingFiles,
          opfsReadFile, loadingImageURL, nativeBarAtlas, drawNativeBar,
-         setGameFavicon, ENGINE_BUILD } from '../../igroteka.js?v=16';
+         setGameFavicon, ENGINE_BUILD } from '../../igroteka.js?v=17';
 setGameFavicon();
 
 // Fullscreen toggle. documentElement (not the canvas) so overlays like the
@@ -338,8 +338,11 @@ const DEST = {
   // SDL3Mouse opens Data/Cursors/<Texture>.ani relative to the process CWD;
   // stage under / and mirror into /game in the copy loop to cover both.
   cursors: (n) => `/Data/Cursors/${n}`,
-  'audio-zh': (n) => `/game/${n}`,
-  'audio-base': (n) => `/game-base/${n}`,
+  // Audio stages into separate dirs AFTER the engine is up (lazy): the
+  // engine only scans /game + /game-base at boot, and mounts these later
+  // via the exported igroteka_mount_audio().
+  'audio-zh': (n) => `/game-audio/${n}`,
+  'audio-base': (n) => `/game-base-audio/${n}`,
 };
 
 // Optional buckets staged when present — game runs without them.
@@ -437,9 +440,21 @@ const IG_DEBUG = DEV
   || localStorage.getItem('ig-debug') === '1';
 const igLogTail = [];
 window.igLogTail = igLogTail;
+// Boot-phase progress: the engine phase used to sit frozen on one message
+// for its whole run. Map the few milestone lines the engine always prints
+// (trace logging stays off in production) to human-readable stages.
+const BOOT_STAGES = [
+  ['Creating MiniAudio', 'Loading the game database…'],
+  ['createGameClient', 'Loading the interface…'],
+  ['DX8Wrapper::Init', 'Starting the renderer…'],
+  ['W3DDisplay::init', 'Loading the shell map — almost there…'],
+];
 const logAndReveal = (t) => {
   if (typeof t === 'string') {
     if (!revealed && t.startsWith('[d8web] draw')) hideLoader();
+    if (!revealed)
+      for (const [marker, text] of BOOT_STAGES)
+        if (t.includes(marker)) { msg.textContent = text; break; }
     // Engine died before it could draw — say so instead of a silent black
     // canvas. Brave's fingerprint shield is the common WebGL2 blocker.
     if (t.includes('WebGL2 context creation failed')) {
@@ -501,6 +516,7 @@ window.Module = {
     ENV.CNC_GENERALS_PATH = '/game-base';
     ENV.HOME = '/home/web_user';
     FS.mkdir('/game'); FS.mkdir('/game-base'); FS.mkdirTree('/game/Data/Scripts');
+    FS.mkdir('/game-audio'); FS.mkdir('/game-base-audio');
     FS.mkdirTree('/Data/Cursors'); FS.mkdirTree('/game/Data/Cursors');
     FS.mkdirTree('/fonts');
     const userDir = '/home/web_user/.local/share/GeneralsX/GeneralsZH';
@@ -532,8 +548,16 @@ window.Module = {
       const font = await fetch('./default.ttf').then(r => r.arrayBuffer());
       FS.writeFile('/fonts/default.ttf', new Uint8Array(font));
 
+      // Audio (~900MB) stages in the background AFTER the engine starts —
+      // it is not needed until the first sound plays, and deferring it
+      // halves the blocking part of the load. ?eageraudio=1 restores the
+      // old block-until-staged behavior (A/B safety valve).
+      const eagerAudio = new URLSearchParams(location.search).get('eageraudio') === '1';
+      const critical = files.filter(f => eagerAudio || !f.dir.startsWith('audio-'));
+      const audio = eagerAudio ? [] : files.filter(f => f.dir.startsWith('audio-'));
+
       let done = 0;
-      for (const f of files) {
+      for (const f of critical) {
         msg.textContent = `Loading ${f.name}…`;
         const data = await f.load();
         if (data) {
@@ -543,11 +567,31 @@ window.Module = {
         } else if (!f.optional) {
           throw new Error(`${f.name}: no data`);
         }
-        bar.value = (++done / files.length) * 100;
+        bar.value = (++done / critical.length) * 100;
       }
       msg.textContent = 'Starting engine…';
       bar.value = 100;
       removeRunDependency('gamedata');
+
+      // Background audio staging + late mount. Usually finishes before the
+      // shell menu triggers its first music track; on a slow device the
+      // menu just starts quiet and sound arrives seconds later.
+      (async () => {
+        for (const f of audio) {
+          const data = await f.load();
+          if (data) FS.writeFile(DEST[f.dir](f.name), data);
+        }
+        const tryMount = () => {
+          try {
+            if (Module._igroteka_mount_audio && Module._igroteka_mount_audio()) return;
+          } catch { /* engine not ready yet */ }
+          setTimeout(tryMount, 2000);
+        };
+        // Audio lands in /game-audio dirs on both paths (lazy AND eager) —
+        // the engine never scans those at boot, so always mount when any
+        // audio was staged.
+        if (files.some(f => f.dir.startsWith('audio-'))) tryMount();
+      })().catch(() => { /* sound is optional — never block the game */ });
     })().catch(e => { msg.textContent = 'Load failed: ' + e; });
   }],
 };
