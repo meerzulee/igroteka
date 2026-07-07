@@ -190,9 +190,19 @@ const isTouch = matchMedia('(pointer: coarse)').matches;
 let gameRevealed = false;
 let fsWish = sessionStorage.getItem('igFsWish') === '1';
 sessionStorage.removeItem('igFsWish');
+// Mobile browsers sometimes drop fullscreen on their own (heavy load stalls,
+// orientation churn). Once the game is up, don't nag with a dialog — arm a
+// one-shot so the player's next tap silently re-enters fullscreen.
+let fsRearm = false;
+addEventListener('pointerdown', () => {
+  if (!fsRearm || inFullscreen()) return;
+  fsRearm = false;
+  enterFullscreen();
+}, true);
 function syncFsNag() {
   if (!fsAvailable) return;
-  if (inFullscreen()) { fsnag.style.display = 'none'; return; }
+  if (inFullscreen()) { fsnag.style.display = 'none'; fsRearm = false; return; }
+  if (isTouch && gameRevealed) { fsnag.style.display = 'none'; fsRearm = true; return; }
   if (fsWish || isTouch) fsnag.style.display = 'flex';
 }
 document.getElementById('fsnagGo').addEventListener('click', () => {
