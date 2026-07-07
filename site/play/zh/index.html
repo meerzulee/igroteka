@@ -572,23 +572,35 @@ window.Module = {
       bar.value = 100;
       removeRunDependency('gamedata');
 
-      // Background audio staging + late mount. Usually finishes before the
-      // shell menu triggers its first music track; on a slow device the
-      // menu just starts quiet and sound arrives seconds later.
+      // Background audio staging + late mount, in listening order: music
+      // first (~35MB — the menu soundtrack arrives seconds after the menu),
+      // then sound effects, then the big speech archives (~600MB) last.
+      // Mounting after each wave is safe: already-open archives are reused
+      // and existing directory-tree entries are kept.
       (async () => {
-        for (const f of audio) {
-          const data = await f.load();
-          if (data) FS.writeFile(DEST[f.dir](f.name), data);
-        }
-        const tryMount = () => {
-          try {
-            if (Module._igroteka_mount_audio && Module._igroteka_mount_audio()) return;
-          } catch { /* engine not ready yet */ }
-          setTimeout(tryMount, 2000);
-        };
+        const mountOnce = () => new Promise((resolve) => {
+          const attempt = () => {
+            try {
+              if (Module._igroteka_mount_audio && Module._igroteka_mount_audio())
+                return resolve();
+            } catch { /* engine not ready yet */ }
+            setTimeout(attempt, 1000);
+          };
+          attempt();
+        });
+        const wave = (re) => audio.filter(f => re.test(f.name));
+        const waves = [wave(/^Music/i), wave(/^Audio/i), wave(/^Speech/i)];
         // Late mount only exists on the lazy debug path — the default
         // stages audio straight into the dirs the engine scans at boot.
-        if (LAZY_AUDIO && audio.length) tryMount();
+        if (LAZY_AUDIO && audio.length) {
+          for (const files of waves) {
+            for (const f of files) {
+              const data = await f.load();
+              if (data) FS.writeFile(DEST[f.dir](f.name), data);
+            }
+            if (files.length) await mountOnce();
+          }
+        }
       })().catch(() => { /* sound is optional — never block the game */ });
     })().catch(e => { msg.textContent = 'Load failed: ' + e; });
   }],
