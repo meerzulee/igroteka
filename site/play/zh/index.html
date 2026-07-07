@@ -428,6 +428,15 @@ initNativeBar();
 // the engine paints its own load screen. Pixel-polling can't do this —
 // Safari always reads back black from a non-preserved WebGL buffer, which
 // made every load look stuck for the full 20s fallback.
+// Engine logs stay out of the console in production: 20k+ lines per boot,
+// each crossing wasm->JS, and Chrome retains every one. ?debug=1 (or
+// localStorage 'ig-debug') turns them back on; dev mode always logs. The
+// last 200 lines are kept in window.igLogTail for bug reports either way.
+const IG_DEBUG = DEV
+  || new URLSearchParams(location.search).get('debug') === '1'
+  || localStorage.getItem('ig-debug') === '1';
+const igLogTail = [];
+window.igLogTail = igLogTail;
 const logAndReveal = (t) => {
   if (typeof t === 'string') {
     if (!revealed && t.startsWith('[d8web] draw')) hideLoader();
@@ -446,7 +455,9 @@ const logAndReveal = (t) => {
          <span style="color:#555">${t}</span>`, { reload: true });
     }
   }
-  console.log(t);
+  igLogTail.push(t);
+  if (igLogTail.length > 200) igLogTail.shift();
+  if (IG_DEBUG) console.log(t);
 };
 
 // Create the WebGL2 context BEFORE the engine, with the engine's own
