@@ -134,21 +134,29 @@
       color: #9aa2b8; margin-top: 6px; letter-spacing: 1px; }
     #bootBar { width: 220px; height: 16px; border: 2px solid #7d7d7d;
       border-radius: 8px; overflow: hidden; position: relative; }
-    #bootBar .blocks { position: absolute; top: 2px; left: -60px; display: flex; gap: 4px;
-      animation: bootscroll 1.6s linear infinite; }
+    #bootBar .blocks { position: absolute; top: 50%; transform: translateY(-50%);
+      left: -60px; display: flex; gap: 4px;
+      animation: bootscroll 1.1s linear infinite; }
     #bootBar .blocks span { width: 12px; height: 8px; border-radius: 2px;
       background: linear-gradient(#7ab1f5, #2b63cf); }
     @keyframes bootscroll { from { left: -60px; } to { left: 236px; } }
   </style>
 </head>
 <body>
-  <div id="boot" class="hidden">
+  <div id="boot">
     <div id="bootLogo">
       <span class="mark">🕹️</span>
       Igroteka<small>игротека · the gaming café</small>
     </div>
     <div id="bootBar"><div class="blocks"><span></span><span></span><span></span></div></div>
   </div>
+  <script>
+    // Synchronous, parser-blocking on purpose: the boot screen is VISIBLE in
+    // markup so Chrome's first paint can't flash the desktop behind it; this
+    // hides it before paint for returning visitors in the same session.
+    if (sessionStorage.getItem('booted'))
+      document.getElementById('boot').classList.add('hidden');
+  </script>
   <div id="desktop"></div>
 
   <div id="startMenu">
@@ -653,9 +661,10 @@ function playChime() {
   } catch { return false; }
 }
 
+// The boot screen is visible from the first paint (markup default) — the
+// inline script in <body> already hid it for same-session revisits.
 const boot = document.getElementById('boot');
 if (!sessionStorage.getItem('booted')) {
-  boot.classList.remove('hidden');
   sessionStorage.setItem('booted', '1');
   setTimeout(() => {
     boot.classList.add('hidden');
@@ -665,7 +674,7 @@ if (!sessionStorage.getItem('booted')) {
       const arm = () => { playChime(); removeEventListener('pointerdown', arm); };
       addEventListener('pointerdown', arm);
     }
-  }, 2800);
+  }, 1400);
 }
 function playChimeArmed() {
   // navigator.userActivation is the honest check for a prior gesture
