@@ -214,6 +214,14 @@ if (!document.fullscreenEnabled && !document.webkitFullscreenEnabled) {
   });
 }
 
+// Launching a game navigates, and navigation always exits fullscreen (browser
+// rule). Remember the state so the play page can offer one-tap re-entry
+// while the game is still loading.
+addEventListener('pagehide', () => {
+  if (document.fullscreenElement || document.webkitFullscreenElement)
+    sessionStorage.setItem('igFsWish', '1');
+});
+
 // ---------- tiny window manager ----------
 const desktop = document.getElementById('desktop');
 const tasks = document.getElementById('tasks');

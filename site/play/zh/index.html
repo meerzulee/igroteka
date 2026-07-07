@@ -129,9 +129,12 @@
       <div class="title-bar">
         <div class="title-bar-text">C&amp;C Generals: Zero Hour</div>
       </div>
-      <div class="body">Zero Hour plays best fullscreen on a phone —
+      <div class="body">Zero Hour plays best fullscreen —
         the whole screen becomes the battlefield.</div>
-      <div class="btns"><button id="fsnagGo">Go fullscreen</button></div>
+      <div class="btns">
+        <button id="fsnagGo">Go fullscreen</button>
+        <button id="fsnagNo">Not now</button>
+      </div>
     </div>
   </div>
   <div id="crash">
@@ -177,22 +180,33 @@ if (!fsAvailable) {
   });
 }
 
-// Touch devices get nagged into fullscreen (XP-politely): the game wants the
-// whole screen, and re-entering fullscreen needs a user gesture — the dialog
-// button provides it. Reappears whenever the user exits fullscreen.
+// Fullscreen nag (XP-politely): re-entering fullscreen needs a user gesture,
+// so the dialog button provides it. Shown immediately — over the loading
+// screen — when the desktop page was fullscreen at launch (navigation always
+// drops fullscreen) or on any touch device; on touch it also reappears
+// whenever fullscreen is exited. "Not now" opts out.
 const fsnag = document.getElementById('fsnag');
 const isTouch = matchMedia('(pointer: coarse)').matches;
 let gameRevealed = false;
+let fsWish = sessionStorage.getItem('igFsWish') === '1';
+sessionStorage.removeItem('igFsWish');
 function syncFsNag() {
-  if (!isTouch || !fsAvailable || !gameRevealed) return;
-  fsnag.style.display = inFullscreen() ? 'none' : 'flex';
+  if (!fsAvailable) return;
+  if (inFullscreen()) { fsnag.style.display = 'none'; return; }
+  if (fsWish || isTouch) fsnag.style.display = 'flex';
 }
 document.getElementById('fsnagGo').addEventListener('click', () => {
+  fsWish = false;
   fsnag.style.display = 'none';
   enterFullscreen();
 });
+document.getElementById('fsnagNo').addEventListener('click', () => {
+  fsWish = false;
+  fsnag.style.display = 'none';
+});
 addEventListener('fullscreenchange', syncFsNag);
 addEventListener('webkitfullscreenchange', syncFsNag);
+syncFsNag();
 
 const msg = document.getElementById('msg');
 const fill = document.getElementById('fill');
