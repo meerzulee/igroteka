@@ -338,12 +338,15 @@ const DEST = {
   // SDL3Mouse opens Data/Cursors/<Texture>.ani relative to the process CWD;
   // stage under / and mirror into /game in the copy loop to cover both.
   cursors: (n) => `/Data/Cursors/${n}`,
-  // Audio stages into separate dirs AFTER the engine is up (lazy): the
-  // engine only scans /game + /game-base at boot, and mounts these later
-  // via the exported igroteka_mount_audio().
-  'audio-zh': (n) => `/game-audio/${n}`,
-  'audio-base': (n) => `/game-base-audio/${n}`,
+  // Default: audio goes where the engine scans at boot (/game, /game-base)
+  // and staging blocks until done — guaranteed sound. ?lazyaudio=1 stages
+  // audio in the background into separate dirs mounted later via
+  // igroteka_mount_audio(); fast, but sounds stay silent after the late
+  // mount (unsolved open-after-mount bug) — debug only.
+  'audio-zh': (n) => (LAZY_AUDIO ? `/game-audio/${n}` : `/game/${n}`),
+  'audio-base': (n) => (LAZY_AUDIO ? `/game-base-audio/${n}` : `/game-base/${n}`),
 };
+const LAZY_AUDIO = new URLSearchParams(location.search).get('lazyaudio') === '1';
 
 // Optional buckets staged when present — game runs without them.
 const OPTIONAL_BUCKETS = { 'audio-zh': ZH_OPTIONAL['audio-zh'], 'audio-base': ZH_OPTIONAL['audio-base'] };
@@ -548,13 +551,9 @@ window.Module = {
       const font = await fetch('./default.ttf').then(r => r.arrayBuffer());
       FS.writeFile('/fonts/default.ttf', new Uint8Array(font));
 
-      // Audio (~900MB) stages in the background AFTER the engine starts —
-      // it is not needed until the first sound plays, and deferring it
-      // halves the blocking part of the load. ?eageraudio=1 restores the
-      // old block-until-staged behavior (A/B safety valve).
-      const eagerAudio = new URLSearchParams(location.search).get('eageraudio') === '1';
-      const critical = files.filter(f => eagerAudio || !f.dir.startsWith('audio-'));
-      const audio = eagerAudio ? [] : files.filter(f => f.dir.startsWith('audio-'));
+      // Audio staging split — see the DEST comment; lazy is debug-only.
+      const critical = files.filter(f => !LAZY_AUDIO || !f.dir.startsWith('audio-'));
+      const audio = LAZY_AUDIO ? files.filter(f => f.dir.startsWith('audio-')) : [];
 
       let done = 0;
       for (const f of critical) {
@@ -587,10 +586,9 @@ window.Module = {
           } catch { /* engine not ready yet */ }
           setTimeout(tryMount, 2000);
         };
-        // Audio lands in /game-audio dirs on both paths (lazy AND eager) —
-        // the engine never scans those at boot, so always mount when any
-        // audio was staged.
-        if (files.some(f => f.dir.startsWith('audio-'))) tryMount();
+        // Late mount only exists on the lazy debug path — the default
+        // stages audio straight into the dirs the engine scans at boot.
+        if (LAZY_AUDIO && audio.length) tryMount();
       })().catch(() => { /* sound is optional — never block the game */ });
     })().catch(e => { msg.textContent = 'Load failed: ' + e; });
   }],
