@@ -31,6 +31,7 @@ CASES = [
     ("vbtri.exe", "window_test", ["--d3d", "--tri"], 0, "reached the backbuffer"),  # triangle from a vertex buffer
     ("vb_evil.exe", "window_test", ["--d3d"], 1, "guest heap exhausted"),  # huge VB rejected, no wrap
     ("fftri.exe", "window_test", ["--d3d", "--tri"], 0, "reached the backbuffer"),  # FFP WVP transform
+    ("tex.exe", "window_test", ["--d3d", "--tri"], 0, "reached the backbuffer"),  # textured quad
 ]
 
 

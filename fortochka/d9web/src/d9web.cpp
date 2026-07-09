@@ -25,7 +25,12 @@ constexpr uint32_t OBJ_REFCOUNT = 4;
 // u32web). Vtables are created lazily on first Direct3DCreate9 — NOT in
 // install(), because run_entry() resets the guest heap after install().
 // FVF bits we recognize.
-constexpr uint32_t FVF_XYZ = 0x002, FVF_XYZRHW = 0x004, FVF_DIFFUSE = 0x040;
+constexpr uint32_t FVF_XYZ = 0x002, FVF_XYZRHW = 0x004, FVF_DIFFUSE = 0x040,
+                   FVF_TEX1 = 0x100;
+
+// Texture object state (past the vtable ptr): refcount, backing VA, W, H.
+constexpr uint32_t TEX_REFCOUNT = 4, TEX_BACKING = 8, TEX_W = 12, TEX_H = 16;
+constexpr uint32_t TEX_STATE_BYTES = 16;
 
 // 4x4 identity (row-major, D3D row-vector convention: clip = v * M).
 inline void mat_identity(float* m) {
@@ -50,7 +55,9 @@ struct State {
     // XYZ vertices go through World*View*Projection then the viewport map.
     float world[16], view[16], proj[16];
     float vp_x = 0, vp_y = 0, vp_w = 640, vp_h = 480;
-    uint32_t d3d9_vtbl = 0, device_vtbl = 0, vbuffer_vtbl = 0; // 0 until first use
+    uint32_t tex_stage0 = 0; // SetTexture(0, ...): bound texture object, 0 = none
+    uint32_t d3d9_vtbl = 0, device_vtbl = 0, vbuffer_vtbl = 0,
+             texture_vtbl = 0; // 0 until first use
     State() {
         mat_identity(world);
         mat_identity(view);
@@ -149,22 +156,35 @@ void dev_set_viewport(Machine& m, const Method& mm) {
     m.ret(mm.nargs, 0);
 }
 
-// One pre-transformed, Gouraud-colored vertex (D3DFVF_XYZRHW | D3DFVF_DIFFUSE).
+// One screen-space vertex: position, Gouraud color, and texture coords.
 struct Vtx {
     float x, y;
     uint32_t color; // D3DCOLOR 0xAARRGGBB
+    float u, v;
 };
 inline float edge(float ax, float ay, float bx, float by, float px, float py) {
     return (px - ax) * (by - ay) - (py - ay) * (bx - ax);
 }
 
+// Nearest-neighbour texel from a bound texture (A8R8G8B8), UV wrapped.
+inline uint32_t sample_tex(Machine& m, uint32_t tex, float u, float v) {
+    int tw = (int)m.read32(tex + TEX_W), th = (int)m.read32(tex + TEX_H);
+    if (tw <= 0 || th <= 0) return 0xFFFFFFFFu;
+    if (!std::isfinite(u) || !std::isfinite(v)) return 0xFFFFFFFFu;
+    int tx = ((int)std::floor(u * tw)) % tw, ty = ((int)std::floor(v * th)) % th;
+    if (tx < 0) tx += tw;
+    if (ty < 0) ty += th;
+    return m.read32(m.read32(tex + TEX_BACKING) + ((size_t)ty * tw + tx) * 4);
+}
+
 // Software-rasterize one screen-space triangle into the backbuffer (barycentric
-// coverage, Gouraud color, no depth/cull). Returns the pixel-test count so the
-// caller can enforce a work budget. Guest floats are fully attacker-controlled:
-// reject non-finite coords and a non-finite 1/area before any float→int cast
-// (which would be UB on NaN/inf/out-of-range), and clamp the bbox AS FLOAT to
-// [0, dim-1] so every cast is of an in-range value.
-uint64_t raster_triangle(State& s, const Vtx& a, const Vtx& b, const Vtx& c) {
+// coverage, Gouraud color, optional nearest-sampled texture modulated by the
+// vertex color, no depth/cull). Returns the pixel-test count for the work
+// budget. Guest floats are attacker-controlled: reject non-finite coords and a
+// non-finite 1/area before any float→int cast (UB on NaN/inf/out-of-range) and
+// clamp the bbox AS FLOAT to [0, dim-1] so every cast is of an in-range value.
+uint64_t raster_triangle(Machine& m, State& s, uint32_t tex, const Vtx& a,
+                         const Vtx& b, const Vtx& c) {
     if (!std::isfinite(a.x) || !std::isfinite(a.y) || !std::isfinite(b.x) ||
         !std::isfinite(b.y) || !std::isfinite(c.x) || !std::isfinite(c.y))
         return 0;
@@ -190,8 +210,17 @@ uint64_t raster_triangle(State& s, const Vtx& a, const Vtx& b, const Vtx& c) {
                           w2 * ((c.color >> sh) & 0xFF);
                 return (uint32_t)(v < 0 ? 0 : v > 255 ? 255 : v);
             };
+            uint32_t r = chan(16), g = chan(8), bl = chan(0);
+            if (tex) { // MODULATE: texel * diffuse (D3D default stage op)
+                float tu = w0 * a.u + w1 * b.u + w2 * c.u;
+                float tv = w0 * a.v + w1 * b.v + w2 * c.v;
+                uint32_t t = sample_tex(m, tex, tu, tv);
+                r = r * ((t >> 16) & 0xFF) / 255;
+                g = g * ((t >> 8) & 0xFF) / 255;
+                bl = bl * (t & 0xFF) / 255;
+            }
             s.backbuffer[(size_t)y * s.width + x] =
-                0xFF000000u | (chan(16) << 16) | (chan(8) << 8) | chan(0);
+                0xFF000000u | (r << 16) | (g << 8) | bl;
         }
     }
     return (uint64_t)(maxx - minx + 1) * (maxy - miny + 1);
@@ -207,22 +236,29 @@ constexpr uint32_t kMaxPrimitives = 4'000'000;
 // perspective divide and viewport map. Color from DIFFUSE, else opaque white.
 Vtx vertex_screen(Machine& m, uint32_t p, const float* wvp) {
     const uint32_t fvf = g_state.fvf;
-    if (fvf & FVF_XYZRHW) { // pre-transformed: color follows x,y,z,rhw (+16)
-        uint32_t col = (fvf & FVF_DIFFUSE) ? m.read32(p + 16) : 0xFFFFFFFFu;
-        return {read_f32(m, p + 0), read_f32(m, p + 4), col};
+    // Component offsets from the FVF: position, then DIFFUSE, then TEX1.
+    uint32_t off = (fvf & FVF_XYZRHW) ? 16 : 12;
+    uint32_t color_off = off;
+    if (fvf & FVF_DIFFUSE) off += 4;
+    uint32_t uv_off = off;
+    uint32_t col = (fvf & FVF_DIFFUSE) ? m.read32(p + color_off) : 0xFFFFFFFFu;
+    float u = 0, vv = 0;
+    if (fvf & FVF_TEX1) {
+        u = read_f32(m, p + uv_off);
+        vv = read_f32(m, p + uv_off + 4);
     }
-    // Untransformed XYZ: clip = [x,y,z,1] * wvp.
+    if (fvf & FVF_XYZRHW) // pre-transformed: x,y already in pixels
+        return {read_f32(m, p + 0), read_f32(m, p + 4), col, u, vv};
+    // Untransformed XYZ: clip = [x,y,z,1] * wvp, then divide + viewport.
     float in[4] = {read_f32(m, p + 0), read_f32(m, p + 4), read_f32(m, p + 8), 1.0f};
     float clip[4];
     for (int j = 0; j < 4; j++)
         clip[j] = in[0] * wvp[0 * 4 + j] + in[1] * wvp[1 * 4 + j] +
                   in[2] * wvp[2 * 4 + j] + in[3] * wvp[3 * 4 + j];
     float w = clip[3] == 0.0f ? 1e-6f : clip[3];
-    float nx = clip[0] / w, ny = clip[1] / w;
-    float sx = (nx * 0.5f + 0.5f) * g_state.vp_w + g_state.vp_x;
-    float sy = (0.5f - ny * 0.5f) * g_state.vp_h + g_state.vp_y; // y flips
-    uint32_t col = (fvf & FVF_DIFFUSE) ? m.read32(p + 12) : 0xFFFFFFFFu;
-    return {sx, sy, col};
+    float sx = (clip[0] / w * 0.5f + 0.5f) * g_state.vp_w + g_state.vp_x;
+    float sy = (0.5f - clip[1] / w * 0.5f) * g_state.vp_h + g_state.vp_y; // y flips
+    return {sx, sy, col, u, vv};
 }
 
 // Rasterize `count` triangles whose vertex j lives at base + (start+j)*stride.
@@ -231,10 +267,11 @@ Vtx vertex_screen(Machine& m, uint32_t p, const float* wvp) {
 void draw_tris(Machine& m, uint32_t count, uint32_t base, uint32_t start,
                uint32_t stride) {
     const uint32_t fvf = g_state.fvf;
-    // Position is required; DIFFUSE optional. Other components (normals, tex
-    // coords, > stream-0) aren't in the layout yet — throw named, add on demand.
+    // Position required; DIFFUSE + TEX1 optional. Other components (normals,
+    // > stream-0, extra tex coords) aren't in the layout — throw named, add on
+    // demand (stub-log-driven).
     bool ok = (fvf & (FVF_XYZ | FVF_XYZRHW)) &&
-              !(fvf & ~(FVF_XYZ | FVF_XYZRHW | FVF_DIFFUSE));
+              !(fvf & ~(FVF_XYZ | FVF_XYZRHW | FVF_DIFFUSE | FVF_TEX1));
     if (!ok)
         throw MachineError{"draw: unsupported FVF 0x" + std::to_string(fvf)};
     if (count > kMaxPrimitives)
@@ -243,11 +280,12 @@ void draw_tris(Machine& m, uint32_t count, uint32_t base, uint32_t start,
     float wv[16], wvp[16];
     mat_mul(g_state.world, g_state.view, wv);
     mat_mul(wv, g_state.proj, wvp);
+    const uint32_t tex = (fvf & FVF_TEX1) ? g_state.tex_stage0 : 0;
     const uint64_t fill_budget = 64ull * g_state.width * g_state.height;
     uint64_t filled = 0;
     auto va = [&](uint32_t j) { return base + (start + j) * stride; };
     for (uint32_t t = 0; t < count; t++) {
-        filled += raster_triangle(g_state, vertex_screen(m, va(3 * t), wvp),
+        filled += raster_triangle(m, g_state, tex, vertex_screen(m, va(3 * t), wvp),
                                   vertex_screen(m, va(3 * t + 1), wvp),
                                   vertex_screen(m, va(3 * t + 2), wvp));
         if (filled > fill_budget) break; // bound total attacker-controlled fill
@@ -305,6 +343,37 @@ void vb_lock(Machine& m, const Method& mm) {
     m.ret(mm.nargs, 0);
 }
 
+// --- IDirect3DTexture9 ---
+void dev_create_texture(Machine& m, const Method& mm) {
+    // CreateTexture(this, Width, Height, Levels, Usage, Format, Pool, ppTexture,
+    //   pSharedHandle). Backing store is Width*Height A8R8G8B8 texels.
+    uint32_t w = m.arg(1), h = m.arg(2), ppTex = m.arg(7);
+    if (w == 0 || h == 0 || w > 4096 || h > 4096)
+        throw MachineError{"CreateTexture: unsupported dimensions"};
+    uint32_t backing = m.alloc(w * h * 4);
+    uint32_t tex = m.create_com_instance(g_state.texture_vtbl, TEX_STATE_BYTES);
+    m.write32(tex + TEX_REFCOUNT, 1);
+    m.write32(tex + TEX_BACKING, backing);
+    m.write32(tex + TEX_W, w);
+    m.write32(tex + TEX_H, h);
+    m.write32(ppTex, tex);
+    m.ret(mm.nargs, 0);
+}
+void tex_lock_rect(Machine& m, const Method& mm) {
+    // LockRect(this, Level, D3DLOCKED_RECT* {INT Pitch; void* pBits}, RECT*,
+    //   Flags). Level 0 only; hand back a guest pointer to the whole surface.
+    uint32_t tex = m.arg(0), plr = m.arg(2);
+    uint32_t w = m.read32(tex + TEX_W);
+    m.write32(plr + 0, w * 4);                     // Pitch
+    m.write32(plr + 4, m.read32(tex + TEX_BACKING)); // pBits
+    m.ret(mm.nargs, 0);
+}
+void dev_set_texture(Machine& m, const Method& mm) {
+    // SetTexture(this, Stage, pTexture). Stage 0 honored; others recorded-noop.
+    if (m.arg(1) == 0) g_state.tex_stage0 = m.arg(2);
+    m.ret(mm.nargs, 0);
+}
+
 // IDirect3DDevice9 vtable in d3d9.h declaration order — POSITION IS THE INDEX.
 // nargs matters only for handled rows; null-fn rows throw before returning.
 // The SetRenderState/SetFVF no-ops are future state-tracker inputs (recorded
@@ -321,7 +390,7 @@ constexpr Method kDeviceVtbl[] = {
     {"Reset", 0, nullptr}, {"Present", 5, dev_present},
     {"GetBackBuffer", 0, nullptr}, {"GetRasterStatus", 0, nullptr},
     {"SetDialogBoxMode", 0, nullptr}, {"SetGammaRamp", 0, nullptr},
-    {"GetGammaRamp", 0, nullptr}, {"CreateTexture", 0, nullptr},
+    {"GetGammaRamp", 0, nullptr}, {"CreateTexture", 9, dev_create_texture},
     {"CreateVolumeTexture", 0, nullptr}, {"CreateCubeTexture", 0, nullptr},
     {"CreateVertexBuffer", 7, dev_create_vertex_buffer},
     {"CreateIndexBuffer", 0, nullptr},
@@ -343,7 +412,7 @@ constexpr Method kDeviceVtbl[] = {
     {"GetRenderState", 0, nullptr}, {"CreateStateBlock", 0, nullptr},
     {"BeginStateBlock", 0, nullptr}, {"EndStateBlock", 0, nullptr},
     {"SetClipStatus", 0, nullptr}, {"GetClipStatus", 0, nullptr},
-    {"GetTexture", 0, nullptr}, {"SetTexture", 0, nullptr},
+    {"GetTexture", 0, nullptr}, {"SetTexture", 3, dev_set_texture},
     {"GetTextureStageState", 0, nullptr}, {"SetTextureStageState", 0, nullptr},
     {"GetSamplerState", 0, nullptr}, {"SetSamplerState", 0, nullptr},
     {"ValidateDevice", 0, nullptr}, {"SetPaletteEntries", 0, nullptr},
@@ -422,6 +491,23 @@ constexpr Method kVBufferVtbl[] = {
 static_assert(sizeof(kVBufferVtbl) / sizeof(Method) == 14,
               "IDirect3DVertexBuffer9 has 14 vtable entries");
 
+// IDirect3DTexture9 (22 methods; IDirect3DResource9 + BaseTexture prefix, then
+// texture methods). LockRect hands back a guest pointer to the surface texels.
+constexpr Method kTextureVtbl[] = {
+    {"QueryInterface", 3, com_query_interface}, {"AddRef", 1, com_addref},
+    {"Release", 1, com_release}, {"GetDevice", 0, nullptr},
+    {"SetPrivateData", 0, nullptr}, {"GetPrivateData", 0, nullptr},
+    {"FreePrivateData", 0, nullptr}, {"SetPriority", 0, nullptr},
+    {"GetPriority", 0, nullptr}, {"PreLoad", 0, nullptr}, {"GetType", 0, nullptr},
+    {"SetLOD", 0, nullptr}, {"GetLOD", 0, nullptr}, {"GetLevelCount", 0, nullptr},
+    {"SetAutoGenFilterType", 0, nullptr}, {"GetAutoGenFilterType", 0, nullptr},
+    {"GenerateMipSubLevels", 0, nullptr}, {"GetLevelDesc", 0, nullptr},
+    {"GetSurfaceLevel", 0, nullptr}, {"LockRect", 5, tex_lock_rect},
+    {"UnlockRect", 2, ret_ok}, {"AddDirtyRect", 0, nullptr},
+};
+static_assert(sizeof(kTextureVtbl) / sizeof(Method) == 22,
+              "IDirect3DTexture9 has 22 vtable entries");
+
 // Dispatch one vtable call: look the method up in the interface's table, throw
 // a named error if unimplemented, else run it.
 template <const Method* Vtbl, size_t N>
@@ -441,6 +527,9 @@ void d3d9_method(Machine& m, unsigned i) {
 void vbuffer_method(Machine& m, unsigned i) {
     dispatch<kVBufferVtbl, 14>(m, i, "IDirect3DVertexBuffer9");
 }
+void texture_method(Machine& m, unsigned i) {
+    dispatch<kTextureVtbl, 22>(m, i, "IDirect3DTexture9");
+}
 
 } // namespace
 
@@ -457,6 +546,7 @@ void install(Machine& m) {
                 g_state.d3d9_vtbl = m.create_com_vtable(17, d3d9_method);
                 g_state.device_vtbl = m.create_com_vtable(119, device_method);
                 g_state.vbuffer_vtbl = m.create_com_vtable(14, vbuffer_method);
+                g_state.texture_vtbl = m.create_com_vtable(22, texture_method);
             }
             uint32_t obj = m.create_com_instance(g_state.d3d9_vtbl, OBJ_STATE_BYTES);
             m.write32(obj + OBJ_REFCOUNT, 1);
