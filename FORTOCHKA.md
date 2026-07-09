@@ -228,17 +228,23 @@ re-based on it.
       precise faults, hostcall seam, 14/14 asm corpus tests green under
       ASan/UBSan, 86 MIPS native unoptimized (budget: 50). Missing: x87, SSE1,
       decode cache. Corpus driver: `tests/run.py` (MinGW as → flat bin → assert)
-- [ ] `peload`: map sections, apply relocs, bind imports to host thunk table,
-      run TLS callbacks
-- [ ] `k32web` minimum: identity-mapped guest arena, VirtualAlloc/heaps, TLS,
+- [~] `peload`: map sections, apply relocs, bind imports to host thunk table,
+      run TLS callbacks — LIVE (`fortochka/peload/`): PE32 map at preferred
+      base, HIGHLOW relocs, IAT→hostcall-slot binding, TLS callbacks surfaced
+      (not yet invoked)
+- [~] `k32web` minimum: identity-mapped guest arena, VirtualAlloc/heaps, TLS,
       GetModuleHandle/GetProcAddress (host-stub aware), files→OPFS (reuse
-      Track 1 VFS), stdout
+      Track 1 VFS), stdout — STARTED (`fortochka/k32web/`): stdcall dispatch,
+      GetStdHandle/WriteFile/ExitProcess; grows stub-log driven
 - [ ] Boundary thunk generator: stdcall/cdecl arg lifting from guest stack →
       native call → EAX/EDX:EAX return, generated from an IDL-ish table, both
-      directions
+      directions (hand-rolled per-import for now; generator when count grows)
 
 **Exit criterion:** `hello.exe` — a real PE we compiled — prints via emulated
 `printf` → `WriteConsole` in a browser tab.
+**2026-07-10: native half MET** — `zhrun corpus/bin/hello.exe` prints through
+the full peload→zhelezo→hostcall→k32web pipeline, exit 0, output identical to
+the Wine oracle. Remaining for full F1: Emscripten build + browser shell.
 
 ### Phase F2 — Window (target: 3–4 weeks)
 
