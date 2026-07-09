@@ -322,9 +322,14 @@ plus the SEH/`seh.exe` item below, remain for F2/F3 proper.
       MET:** IDirect3DVertexBuffer9 (3rd COM interface); CreateVertexBuffer →
       Lock (raw guest pointer, identity-mapped, no marshalling) → Unlock →
       SetStreamSource → DrawPrimitive; `vbtri.exe` draws the triangle from a
-      real VB. Rasterizer hardened vs guest floats (Codex: finite guards,
-      primitive cap, fill budget). Next: index buffers, textures, FFP transform
-      path (non-pretransformed XYZ), WebGL backend.
+      real VB. **FFP transform MET:** SetTransform/SetViewport → XYZ vertices
+      through World*View*Projection + viewport (`fftri.exe`). **Textures MET:**
+      IDirect3DTexture9 (4th COM iface), CreateTexture/LockRect/SetTexture, UV
+      sampling + MODULATE in the rasterizer (`tex.exe` checkerboard quad).
+      Rasterizer hardened vs guest floats (Codex: finite guards, primitive cap,
+      fill budget, alloc-overflow). Full FFP path runs: transform → texture →
+      raster → present → canvas. Next: index buffers, render states (alpha/
+      depth), WebGL backend swap.
 - [ ] Caps persona (Radeon 9700), CheckDeviceFormat table
 - [ ] FFP path: port/extend the d8web synthesizer to D3D9 stage semantics
 - [ ] Shader translator: vs_1_1 → GLSL ES first, then ps_1_1–ps_1_4, then
