@@ -70,6 +70,20 @@ class Machine {
     static constexpr uint32_t TIB_SCRATCH_CONTEXT = 0x200; // CONTEXT stub
     static constexpr uint32_t SEH_CHAIN_END = 0xFFFFFFFFu;
 
+    // --- guest heap + COM support ---
+    // Bump-allocate `size` bytes (8-aligned) of guest memory from the runtime
+    // heap region; returns the guest VA. For HLE-owned objects (COM interfaces,
+    // vtables) the guest never frees.
+    uint32_t alloc(uint32_t size);
+
+    // Build a COM object: an [vtable_ptr, refcount, ...state] blob plus a vtable
+    // of `num_methods` hostcall thunks. Every method i, when the guest calls it,
+    // invokes `handler(*this, method_index)` with the object as arg(0) (COM's
+    // `this`), letting the HLE module dispatch by index. Returns the object VA.
+    using ComHandler = std::function<void(Machine&, unsigned method)>;
+    uint32_t create_com_object(unsigned num_methods, uint32_t state_bytes,
+                               ComHandler handler);
+
     bool exited = false;
     uint32_t exit_code = 0;
 
@@ -100,6 +114,15 @@ class Machine {
     unsigned reentry_depth_ = 0; // current reverse-thunk nesting depth
     peload::Image image_;
     bool loaded_ = false;
+
+    // Guest heap bump pointer (runtime-owned region below the image base) and
+    // the COM vtable-thunk registry: slot -> (handler, method index).
+    uint32_t heap_next_ = 0;
+    struct ComSlot {
+        ComHandler handler;
+        unsigned method;
+    };
+    std::vector<ComSlot> com_slots_; // parallel to slots_, indexed by hostcall slot
 };
 
 struct MachineError {

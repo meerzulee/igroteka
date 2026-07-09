@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <vector>
 
+#include "d9web/d9web.h"
 #include "k32web/k32web.h"
 #include "runtime/machine.h"
 #include "u32web/u32web.h"
@@ -39,6 +40,7 @@ int zhweb_run(const uint8_t* file, int len, int arena_mb) {
 
     k32web::install(m);
     u32web::install(m);
+    d9web::install(m);
     // Seed one WM_PAINT so a windowed exe paints once; a console exe never pumps
     // and leaves it unconsumed.
     u32web::post_message(0x00010001, 0x000F /*WM_PAINT*/, 0, 0);
@@ -52,7 +54,9 @@ int zhweb_run(const uint8_t* file, int len, int arena_mb) {
         printf("zhweb: %s\n", e.what.c_str());
         code = -2;
     }
-    g_fb = u32web::framebuffer(g_fb_w, g_fb_h); // null if no window was created
+    // Prefer a presented D3D frame; fall back to the GDI paint framebuffer.
+    g_fb = d9web::framebuffer(g_fb_w, g_fb_h);
+    if (!g_fb) g_fb = u32web::framebuffer(g_fb_w, g_fb_h);
     return code;
 }
 

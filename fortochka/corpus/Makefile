@@ -4,12 +4,12 @@
 CC      := i686-w64-mingw32-gcc
 CFLAGS  := -Os -ffreestanding -fno-asynchronous-unwind-tables -fno-ident
 LDFLAGS := -nostdlib -Wl,--entry=_start -Wl,--subsystem,console \
-           -Wl,--image-base=0x400000 -lkernel32 -luser32 -lgdi32
+           -Wl,--image-base=0x400000 -lkernel32 -luser32 -lgdi32 -ld3d9
 
 BIN := bin
 RUNGS := $(BIN)/hello.exe $(BIN)/window.exe $(BIN)/recurse.exe $(BIN)/seh.exe \
          $(BIN)/seh_chain.exe $(BIN)/seh_noncont.exe $(BIN)/fpu.exe \
-         $(BIN)/paint.exe
+         $(BIN)/paint.exe $(BIN)/d3dclear.exe
 
 all: $(RUNGS)
 

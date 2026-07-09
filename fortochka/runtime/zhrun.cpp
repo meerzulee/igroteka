@@ -11,6 +11,7 @@
 #include <cstring>
 #include <vector>
 
+#include "d9web/d9web.h"
 #include "k32web/k32web.h"
 #include "runtime/machine.h"
 #include "u32web/u32web.h"
@@ -57,6 +58,7 @@ int main(int argc, char** argv) {
 
     k32web::install(m);
     u32web::install(m);
+    d9web::install(m);
 
     int code;
     try {

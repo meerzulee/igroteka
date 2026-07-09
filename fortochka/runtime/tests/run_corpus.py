@@ -25,6 +25,7 @@ CASES = [
     ("seh_noncont.exe", "zhrun", [], 1, "noncontinuable"),  # rejected, not resumed
     ("fpu.exe", "zhrun", [], 42, None),          # real x87 float math end-to-end
     ("paint.exe", "window_test", ["--paint"], 0, "guest GDI reached"),  # WM_PAINT→fb
+    ("d3dclear.exe", "window_test", ["--d3d"], 0, "COM Clear reached"),  # D3D9 COM
 ]
 
 

@@ -16,9 +16,37 @@ constexpr uint32_t STACK_TOP = 0x00380000; // below the 0x400000 image base
 // (see machine.h TIB_SCRATCH_*). Empty chain sentinel is 0xFFFFFFFF (MSVC).
 constexpr uint32_t TIB_ADDR = 0x00390000;
 constexpr uint32_t SEH_END = 0xFFFFFFFFu;
+// Runtime-owned guest heap for HLE objects (COM interfaces, vtables). Above any
+// reasonable image, well inside the default 64 MB arena.
+constexpr uint32_t HEAP_BASE = 0x02000000;
 } // namespace
 
 uint32_t Machine::tib_addr() const { return TIB_ADDR; }
+
+uint32_t Machine::alloc(uint32_t size) {
+    size = (size + 7) & ~7u; // 8-align
+    if (heap_next_ == 0) heap_next_ = HEAP_BASE;
+    uint32_t va = heap_next_;
+    if ((uint64_t)va + size > arena_.size())
+        throw MachineError{"guest heap exhausted"};
+    heap_next_ += size;
+    return va;
+}
+
+uint32_t Machine::create_com_object(unsigned num_methods, uint32_t state_bytes,
+                                    ComHandler handler) {
+    uint32_t obj = alloc(4 + state_bytes);         // [vtable_ptr, state...]
+    uint32_t vtbl = alloc(num_methods * 4);
+    for (unsigned i = 0; i < num_methods; i++) {
+        uint32_t slot = next_slot_++;
+        if (slot >= com_slots_.size()) com_slots_.resize(slot + 1);
+        com_slots_[slot] = {handler, i};
+        write32(vtbl + 4 * i, hostcall_addr(slot)); // vtable[i] = thunk
+    }
+    write32(obj, vtbl); // object's first dword is the vtable pointer
+    for (uint32_t i = 0; i < state_bytes; i += 4) write32(obj + 4 + i, 0);
+    return obj;
+}
 
 Machine::Machine(uint32_t arena_bytes) : arena_(arena_bytes, 0) {
     next_slot_ = FIRST_IMPORT_SLOT;
@@ -70,6 +98,12 @@ void Machine::ret(unsigned nargs, uint32_t eax) {
 }
 
 void Machine::dispatch_import(uint32_t slot) {
+    // COM vtable thunks take priority: a slot bound to a COM method dispatches
+    // by index with the object as arg(0).
+    if (slot < com_slots_.size() && com_slots_[slot].handler) {
+        com_slots_[slot].handler(*this, com_slots_[slot].method);
+        return;
+    }
     const peload::Import* imp = slot < slots_.size() ? slots_[slot] : nullptr;
     if (!imp) throw MachineError{"hostcall to unbound slot"};
     for (auto& h : handlers_)
@@ -120,6 +154,7 @@ int Machine::run_entry(uint64_t step_budget) {
     // Thread Information Block: fs:[0] = SEH chain head (empty), plus the few
     // fields era CRTs read. reentry_depth_ resets with the fresh process.
     reentry_depth_ = 0;
+    heap_next_ = HEAP_BASE;
     cpu_.fs_base = TIB_ADDR;
     write32(TIB_ADDR + 0x00, SEH_END);    // ExceptionList: empty chain
     write32(TIB_ADDR + 0x04, STACK_TOP);  // StackBase (high)
