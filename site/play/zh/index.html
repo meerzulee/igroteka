@@ -173,7 +173,9 @@
     if (!token) { location.replace('/party?code=' + encodeURIComponent(room)); return; }
     var role = localStorage.getItem('cafe-role:' + room) || 'guest';
     window.CAFE_ENABLE = true;
-    window.CAFE_URL   = qs.get('cafe') || 'https://cafe-nw.mrz.sh';
+    // localhost dev defaults to the local wrangler cafe, like the party page
+    var isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    window.CAFE_URL   = qs.get('cafe') || (isLocal ? 'http://localhost:8799' : 'https://cafe-nw.mrz.sh');
     window.CAFE_ROOM  = room;
     window.CAFE_NAME  = qs.get('player') || localStorage.getItem('cafe-name') || 'General';
     window.CAFE_TOKEN = token;

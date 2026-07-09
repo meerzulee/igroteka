@@ -20,8 +20,11 @@
   "use strict";
 
   var params = new URLSearchParams(location.search);
-  // cafe base is overridable for local testing (?cafe=http://localhost:8799).
-  var CAFE = params.get("cafe") || "https://cafe-nw.mrz.sh";
+  // cafe base: ?cafe= override wins; a localhost-served site defaults to the
+  // local wrangler dev cafe (:8799) so dev needs no URL param; production
+  // talks to cafe-nw.mrz.sh.
+  var LOCAL = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+  var CAFE = params.get("cafe") || (LOCAL ? "http://localhost:8799" : "https://cafe-nw.mrz.sh");
   var GAME = "/play/zh/"; // same-origin game boot
   var EMBED = params.get("embed") === "1";
   if (EMBED) document.body.classList.add("embed");
