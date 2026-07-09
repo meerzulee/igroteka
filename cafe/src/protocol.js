@@ -10,6 +10,7 @@
 //  { t:"signal", to:<peerId>, data:<opaque> }   relay SDP/ICE to one peer
 //  { t:"ready",  ready:<bool> }                 toggle ready in the lobby
 //  { t:"chat",   text:<string> }                lobby chat (≤500 chars)
+//  { t:"kick",   id:<peerId> }                  host-only: remove + ban their token
 //  { t:"start",  map:<string?> }                host-only: launch the match
 //
 // ── server → client ──────────────────────────────────────────────────────────
@@ -17,6 +18,7 @@
 //  { t:"roster",  players:[{id,name,host,ready}] }   sent on every change
 //  { t:"signal",  from:<peerId>, data:<opaque> }     relayed handshake
 //  { t:"chat",    from:<peerId>, name:<string>, text:<string> }
+//  { t:"kicked" }                                     you were removed by the host
 //  { t:"start",   seed:<uint32>, map:<string?>, slots:[{id,name,host,ready}] }
 //
 // The `seed` in "start" is authoritative and identical for all peers — it feeds

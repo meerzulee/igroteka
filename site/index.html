@@ -301,6 +301,19 @@ function addIcon(id, glyph, label, x, y, onOpen) {
 }
 
 // ---------- apps ----------
+// Multiplayer Party runs like a program: an XP window on the desktop (taskbar
+// button, drag, minimize) hosting the party app. ?embed=1 strips the app's own
+// page chrome; launching the game navigates the top frame (the whole desktop).
+function openParty() {
+  const body = makeWindow('party', 'Multiplayer Party', 440);
+  if (!body) return;
+  // Forward a ?cafe= override from the desktop URL (local/staging testing).
+  const cafe = new URLSearchParams(location.search).get('cafe');
+  const src = 'party/?embed=1' + (cafe ? '&cafe=' + encodeURIComponent(cafe) : '');
+  body.innerHTML = `<iframe src="${src}" title="Multiplayer Party"
+    style="width:100%; height:540px; border:0; display:block; background:#ece9d8"></iframe>`;
+}
+
 function openAbout() {
   const body = makeWindow('about', 'About Igroteka', 420);
   if (!body) return;
@@ -551,7 +564,7 @@ async function placeGameIcon() {
   // can't join a match without the game files (the party page double-checks).
   const oldP = document.getElementById('partyIcon');
   if (oldP) oldP.remove();
-  const ep = addIcon('party', '<img src="icons/games.png" alt="">', 'Multiplayer Party', 24, 236, () => location.href = 'party/');
+  const ep = addIcon('party', '<img src="icons/games.png" alt="">', 'Multiplayer Party', 24, 236, openParty);
   ep.id = 'partyIcon';
 }
 if (localStorage.getItem('zh-installed')) placeGameIcon();
@@ -629,7 +642,7 @@ startMenu.addEventListener('click', (e) => {
   if (item.dataset.open === 'setup') openSetup();
   if (item.dataset.open === 'about') openAbout();
   if (item.dataset.open === 'zh') location.href = 'play/zh/';
-  if (item.dataset.open === 'party') location.href = 'party/';
+  if (item.dataset.open === 'party') openParty();
   if (item.dataset.open === 'uninstall') openUninstall();
 });
 

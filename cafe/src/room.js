@@ -92,13 +92,20 @@ export class LobbyRoom extends DurableObject {
     // no valid token => no socket => a leaked URL can't join.
     const party = await this.ctx.storage.get("party");
     let tokenRole = null;
+    let tokenNonce = null;
     if (party) {
       const token = url.searchParams.get("token") || "";
       const secretB64 = await this.ctx.storage.get("secret");
       const claims = secretB64 ? await verifyToken(token, b64uDecode(secretB64)) : null;
       if (!claims || claims.r !== party.code)
         return new Response("unauthorized", { status: 401 });
+      // Kicked players: their token's nonce is banned. They can only return by
+      // re-proving the password at /auth (fresh token, fresh nonce).
+      const banned = (await this.ctx.storage.get("banned")) || [];
+      if (claims.n && banned.includes(claims.n))
+        return new Response("kicked", { status: 401 });
       tokenRole = claims.role;
+      tokenNonce = claims.n || null;
     }
 
     if (this.ctx.getWebSockets().length >= MAX_PLAYERS)
@@ -124,7 +131,7 @@ export class LobbyRoom extends DurableObject {
     while (usedSlots.has(slot)) slot++;
 
     this.ctx.acceptWebSocket(server);
-    server.serializeAttachment({ id, name, host, ready: false, slot });
+    server.serializeAttachment({ id, name, host, ready: false, slot, tn: tokenNonce });
 
     server.send(
       JSON.stringify({
@@ -172,6 +179,30 @@ export class LobbyRoom extends DurableObject {
           name: me.name,
           text: String(msg.text ?? "").slice(0, MAX_CHAT),
         });
+        break;
+      }
+
+      // Host removes a player from the lobby. Closes their socket AND bans the
+      // token they joined with (by its nonce), so the stored token can't just
+      // reconnect — a kicked player must re-prove the password at /auth. Only
+      // meaningful in protected rooms (open rooms have no tokens to ban).
+      case "kick": {
+        if (!me.host) return;
+        const target = this.find(msg.id);
+        if (!target || target === ws) return;
+        const a = target.deserializeAttachment() || {};
+        if (a.tn) {
+          this.ctx.storage.get("banned").then((banned) => {
+            banned = banned || [];
+            banned.push(a.tn);
+            if (banned.length > 64) banned = banned.slice(-64); // bound growth
+            return this.ctx.storage.put("banned", banned);
+          });
+        }
+        try {
+          target.send(JSON.stringify({ t: "kicked" }));
+          target.close(4001, "kicked by host");
+        } catch {}
         break;
       }
 

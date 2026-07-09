@@ -6,11 +6,13 @@
   <title>Private Party — Igroteka</title>
   <link rel="stylesheet" href="../xp.css">
   <style>
-    :root { --blue:#2b63cf; --blue2:#5b9ae6; --gold:#e8b34b; --ink:#c9d4e0; }
+    /* XP dialog over the C&C briefing backdrop — the window and everything in
+       it is native xp.css (Pixelated MS Sans Serif, beige body, sunken inputs,
+       real tabs); only the page behind it carries the game branding. */
     * { box-sizing: border-box; }
     html, body { margin:0; height:100%; }
     body {
-      color: var(--ink); font: 14px/1.5 "Segoe UI", Roboto, sans-serif;
+      font-family: "Pixelated MS Sans Serif", Tahoma, sans-serif; font-size:12px;
       display:flex; align-items:center; justify-content:center; padding:18px;
       background:
         radial-gradient(ellipse 80% 50% at 50% 30%, rgba(40,70,120,.4), transparent 70%),
@@ -19,57 +21,47 @@
         linear-gradient(#05070d, #0a1220 60%, #060a12);
       background-attachment: fixed;
     }
-    .wrap { width:100%; max-width:430px; }
+    .wrap { width:100%; max-width:420px; }
     /* C&C wordmark, matching the game loader */
     #wm { text-align:center; font-weight:800; letter-spacing:2px; line-height:1;
-          margin-bottom:16px; }
+          margin-bottom:16px; font-family:"Segoe UI", Roboto, sans-serif; }
     #wm .a { font-size:13px; color:#8fa9c8; letter-spacing:5px; }
     #wm .b { font-size:34px; margin-top:5px;
       background:linear-gradient(#eaf2ff,#7fa8d8 60%,#3f6ba8);
       -webkit-background-clip:text; background-clip:text; color:transparent; }
-    #wm .c { font-size:12px; color:var(--gold); letter-spacing:8px; margin-top:3px; }
-    .window { box-shadow:0 8px 40px rgba(0,0,0,.6); }
-    .window-body { padding:16px 16px 14px; }
-    .lead { font-size:12px; color:#8fa9c8; margin:0 0 14px; text-align:center;
-            letter-spacing:.4px; }
-    /* segmented Create / Join toggle */
-    .seg { display:flex; margin:0 0 16px; border:1px solid #3a5378; border-radius:5px;
-           overflow:hidden; }
-    .seg button { flex:1; padding:9px 0; border:0; background:#0e1626; color:#9fb4d4;
-                  font:600 13px "Segoe UI",sans-serif; cursor:pointer; letter-spacing:.5px; }
-    .seg button.on { background:linear-gradient(#3f7bd6,#2b63cf); color:#fff; }
-    label { display:block; font-size:11px; text-transform:uppercase; letter-spacing:1px;
-            color:#7f97b8; margin:12px 0 4px; }
-    input {
-      width:100%; padding:9px 10px; background:#0b1220; color:#e6eefb;
-      border:1px solid #33507a; border-radius:4px; font:14px "Segoe UI",sans-serif;
-      outline:none;
-    }
-    input:focus { border-color:var(--blue2); box-shadow:0 0 0 2px rgba(91,154,230,.25); }
-    .go {
-      width:100%; margin-top:18px; padding:11px 0; border:1px solid #2f6bc9; border-radius:5px;
-      background:linear-gradient(#4f8be6,#2b63cf); color:#fff; cursor:pointer;
-      font:700 14px "Segoe UI",sans-serif; letter-spacing:.6px;
-      box-shadow:0 2px 10px rgba(43,99,207,.4);
-    }
-    .go:hover { background:linear-gradient(#5f9bf0,#3670d6); }
-    .go:disabled { opacity:.6; cursor:default; }
-    .err { margin-top:12px; min-height:16px; color:#ff9a8f; font-size:12.5px; text-align:center; }
-    .note { margin-top:14px; font-size:11px; color:#6f86a6; text-align:center;
-            border-top:1px solid #1c2a3f; padding-top:11px; }
-    .note b { color:var(--gold); }
-    /* created panel */
-    .created { text-align:center; }
-    .code { font:800 26px ui-monospace, monospace; letter-spacing:3px; color:#eaf2ff;
-            background:#0b1220; border:1px dashed #3a5378; border-radius:6px;
-            padding:12px; margin:6px 0 4px; user-select:all; }
-    .copy { font-size:11px; color:var(--blue2); cursor:pointer; background:none; border:0;
-            text-decoration:underline; }
-    .share { font-size:11px; color:#6f86a6; word-break:break-all; margin:8px 0 0; }
-    .hidden { display:none; }
-    a { color:var(--gold); }
-    .back { display:inline-block; margin-top:14px; font-size:12px; color:#7f97b8;
-            text-decoration:none; }
+    #wm .c { font-size:12px; color:#e8b34b; letter-spacing:8px; margin-top:3px; }
+    .window { box-shadow:4px 4px 16px rgba(0,0,0,.55); }
+    .window-body { padding:12px; }
+    .lead { margin:2px 2px 12px; color:#222; }
+    menu[role=tablist] { margin:0; }
+    [role=tabpanel] { padding:14px 12px 12px; }
+    .field-row-stacked { margin-bottom:10px; }
+    .field-row-stacked input { width:100%; }
+    .btnrow { display:flex; justify-content:center; gap:8px; margin-top:14px; }
+    .btnrow button { min-width:110px; }
+    .err { min-height:14px; margin-top:8px; color:#d80000; text-align:center; }
+    .note { margin:10px 2px 0; color:#555; }
+    .note b { color:#8a5c00; }
+    .hidden { display:none !important; }
+    /* lobby */
+    #roster li { display:flex; align-items:center; gap:6px; padding:1px 2px; }
+    #roster li .who { flex:1; }
+    #roster li .tag { color:#555; }
+    #roster li .ok { color:#0a7d00; font-weight:700; }
+    #roster button { min-width:0; padding:0 8px; font-size:11px; }
+    #chatlog li { padding:1px 2px; word-break:break-word; }
+    #chatlog li b { color:#00318f; }
+    #chatlog li.sys { color:#777; font-style:italic; }
+    .share { margin:6px 2px 0; color:#555; word-break:break-all; text-align:left; }
+    .backrow { text-align:center; margin-top:12px; }
+    .backrow a { color:#7f97b8; text-decoration:none; font-family:"Segoe UI", Roboto, sans-serif; font-size:12px; }
+    /* Embedded inside a desktop program window (?embed=1): the host window
+       supplies the chrome, so drop ours — no backdrop, wordmark, title bar or
+       page footer. Just the beige app surface. */
+    body.embed { background:#ece9d8; padding:0; align-items:stretch; }
+    body.embed .wrap { max-width:none; }
+    body.embed #wm, body.embed .title-bar, body.embed .backrow.pagefoot { display:none; }
+    body.embed .window { box-shadow:none; }
   </style>
 </head>
 <body>
@@ -88,51 +80,76 @@
 
         <!-- create / join forms -->
         <div id="forms">
-          <p class="lead">Gather your friends in a password-protected room, then
-            launch straight into the battle.</p>
+          <p class="lead">Gather your friends in a password-protected room,
+            then launch straight into the battle.</p>
 
-          <div class="seg">
-            <button id="tabCreate" class="on" type="button">Create</button>
-            <button id="tabJoin" type="button">Join</button>
+          <menu role="tablist" class="justified">
+            <button id="tabCreate" type="button" aria-selected="true" aria-controls="tabPanel">Create a party</button>
+            <button id="tabJoin" type="button" aria-selected="false" aria-controls="tabPanel">Join a party</button>
+          </menu>
+          <div role="tabpanel" id="tabPanel">
+            <form id="form" autocomplete="off">
+              <div class="field-row-stacked">
+                <label for="name">Your name</label>
+                <input id="name" maxlength="24" placeholder="General" autocomplete="off">
+              </div>
+              <div class="field-row-stacked" id="codeRow">
+                <label for="code">Room code</label>
+                <input id="code" maxlength="16" placeholder="the code your host shared"
+                       autocapitalize="off" autocomplete="off" spellcheck="false">
+              </div>
+              <div class="field-row-stacked">
+                <label for="pass">Party password</label>
+                <input id="pass" type="password" maxlength="128"
+                       placeholder="the shared secret" autocomplete="new-password">
+              </div>
+              <div class="btnrow"><button id="go" type="submit">Create Party</button></div>
+              <div id="err" class="err"></div>
+            </form>
           </div>
-
-          <form id="form" autocomplete="off">
-            <label for="name">Your name</label>
-            <input id="name" maxlength="24" placeholder="General" autocomplete="off">
-
-            <div id="codeRow">
-              <label for="code">Room code</label>
-              <input id="code" maxlength="16" placeholder="paste the code your host shared"
-                     autocapitalize="off" autocomplete="off" spellcheck="false">
-            </div>
-
-            <label for="pass">Party password</label>
-            <input id="pass" type="password" maxlength="128"
-                   placeholder="the shared secret" autocomplete="new-password">
-
-            <button id="go" class="go" type="submit">Create Party</button>
-            <div id="err" class="err"></div>
-          </form>
 
           <p class="note">A leaked game link is <b>useless without the password</b> —
             the room only opens for people who prove they know it.</p>
         </div>
 
-        <!-- created: show the code to share, then enter -->
-        <div id="createdPanel" class="created hidden">
-          <p class="lead" style="margin-bottom:6px">Party ready. Share the code and
-            password with your friends.</p>
-          <label style="text-align:center">Room code</label>
-          <div id="createdCode" class="code"></div>
-          <button id="copyCode" class="copy" type="button">copy code</button>
+        <!-- lobby: gather, chat, moderate, launch -->
+        <div id="lobbyPanel" class="hidden">
+          <div class="field-row" style="gap:6px">
+            <label for="createdCode">Room code</label>
+            <input id="createdCode" readonly onclick="this.select()" style="flex:1;text-align:center;font-weight:700;letter-spacing:2px">
+            <button id="copyCode" type="button">Copy</button>
+          </div>
           <p id="shareLink" class="share"></p>
-          <button id="enter" class="go" type="button">Enter Battle →</button>
-          <a href="#" id="startOver" class="back">← create a different party</a>
+
+          <div class="field-row-stacked" style="margin-top:8px">
+            <label>Players</label>
+            <ul class="tree-view" id="roster" style="height:86px;overflow-y:auto;margin:0"></ul>
+          </div>
+
+          <div class="field-row-stacked">
+            <label for="chatMsg">Chat</label>
+            <ul class="tree-view" id="chatlog" style="height:110px;overflow-y:auto;margin:0"></ul>
+          </div>
+          <div class="field-row" style="gap:6px">
+            <input id="chatMsg" maxlength="500" placeholder="say something…" style="flex:1">
+            <button id="chatSend" type="button">Send</button>
+          </div>
+
+          <div class="field-row" style="margin-top:10px;justify-content:space-between">
+            <div class="field-row" style="margin:0">
+              <input type="checkbox" id="readyBox">
+              <label for="readyBox">Ready</label>
+            </div>
+            <button id="startGame" type="button" class="hidden">Start Game</button>
+            <span id="waitMsg" class="hidden" style="color:#555">waiting for the host to start…</span>
+          </div>
+          <div class="backrow"><a href="#" id="leaveLobby">← leave the party</a></div>
         </div>
 
       </div>
     </div>
-    <div style="text-align:center"><a href="/" class="back">← back to Igroteka</a></div>
+    <!-- pagefoot: hidden in embed mode — the desktop IS Igroteka -->
+    <div class="backrow pagefoot"><a href="/">← back to Igroteka</a></div>
   </div>
 
   <script src="../xp-dialog.js"></script>
