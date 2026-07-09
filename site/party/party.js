@@ -145,9 +145,22 @@
     return el.name.value.trim() || localStorage.getItem("cafe-name") || "General";
   }
 
+  // The engine's LAN lobby rejects a join if two players share a name
+  // ("Duplicate name already in game"). If the roster already has my name,
+  // disambiguate with my server-assigned slot (unique 1-8) so the launched
+  // engine name is distinct. Clean name when there's no clash.
+  function engineName() {
+    var name = myName();
+    var mine = lastRoster.filter(function (p) { return p.name === name; });
+    if (mine.length <= 1) return name;
+    var me = lastRoster.filter(function (p) { return p.id === myId; })[0];
+    var slot = me && me.slot ? me.slot : Math.floor(Math.random() * 90 + 10);
+    return (name + " " + slot).slice(0, 24);
+  }
+
   function launch(code) {
     var url = GAME + "?room=" + encodeURIComponent(code) +
-      "&player=" + encodeURIComponent(myName());
+      "&player=" + encodeURIComponent(engineName());
     // Carry a cafe override through to the game so both talk to the same server
     // (default is cafe-nw.mrz.sh for both; the override only matters for local
     // testing and staging).
