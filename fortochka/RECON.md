@@ -22,7 +22,14 @@ python3 tools/pescope.py /path/to/RomeTW.exe
 launches without the client; if it refuses, it does not onboard — hard rule,
 no §1201 gray areas). Record verdict here:
 
-> **Verdict:** _pending_
+> **Verdict (2026-07-10, RTW Gold via Steam on cachynator):** NO DRM WRAPPER.
+> No `.bind`/SteamStub, no packer sections — plain PE32, base 0x400000,
+> reloc-stripped-era layout. Links `steam_api.dll` (18 imports) as an
+> ordinary DLL. Remaining soft check: launch under Wine *without* the Steam
+> client, authentic files untouched — if the game proceeds past a failed
+> `SteamAPI_Init`, running it involves zero circumvention. If it hard-exits,
+> flagship reconsiders (we do not emulate steam_api — standing rule).
+> Same result for RomeTW-BI.exe (identical import profile).
 
 ## 2. Import table — the canonical scope list
 
@@ -32,16 +39,29 @@ python3 /path/to/tools/pescope.py --json *.exe *.dll > rtw-imports.json
 python3 /path/to/tools/pescope.py RomeTW.exe          # human-readable
 ```
 
-- [ ] Paste per-DLL totals here, then rank each DLL trivial / mechanical / hard
-- [ ] CRT linkage: does the import list include `msvcrt.dll` (dynamic CRT) or
-      not (static)? Static = smaller HLE surface.
-- [ ] Which d3d9 entry points does it import? (Almost certainly just
-      `Direct3DCreate9` — everything else is COM vtable calls, which is why
-      the boundary is thunks, not imports.)
-- [ ] Shipped-DLL census: which DLLs in the install dir stay guest-emulated
-      (binkw32, mss32…) vs. which are system DLLs we HLE. Note: ZH's
-      `mss32.dll` imports only kernel32/winmm/user32 (130 fns) — expect RTW's
-      Miles to be similar. Guest DLLs' own imports add to HLE scope.
+- [x] Dump committed: `rtw-imports.json`. RomeTW.exe: 295 imports / 14 DLLs.
+      Ranked:
+      - **trivial**: advapi32 (6 plain RegXxxA → regweb), winmm (5 timer fns),
+        gdi32 (`GetDeviceCaps`, one function), dinput8 (`DirectInput8Create`),
+        ole32 (6 CoXxx), msvfw32 (3 DrawDib* — intro videos, skippable),
+        ddraw (2: CreateEx + EnumerateExA — mode enum/menu blit)
+      - **mechanical**: kernel32 (140), user32 (26 — textbook message pump:
+        RegisterClassA/CreateWindowExA/PeekMessageA/DispatchMessageA/
+        MsgWaitForMultipleObjects, nothing exotic), wsock32 (18 winsock-1.1
+        ordinals — multiplayer, stub to failure, single-player unaffected)
+      - **hard**: d3d9/d3d8 (one import each — `Direct3DCreate9`/`Create8`;
+        the real surface is COM vtables behind them)
+- [x] CRT linkage: **static** — no msvcrt.dll import. Smaller surface, as
+      hoped. No delay imports at all.
+- [x] **RTW ships BOTH renderers**: imports `Direct3DCreate8` AND
+      `Direct3DCreate9`. If the D3D8 path is selectable/forcible, Track 1's
+      existing d8web covers RTW rendering and d9web demotes to
+      quality-of-life. Runtime experiment decides (Wine, force/pick renderer).
+- [x] Guest-DLL census: `mss32.dll` (Miles) + `steam_api.dll` run emulated.
+      **Miles outputs via waveOut** (`waveOutOpen/Write/PrepareHeader` +
+      midiOut/mixer/aux minor) — NOT DirectSound. dsweb shrinks to a
+      waveOut→AudioWorklet shim; DirectSound emulation off RTW's critical
+      path entirely. No binkw32 anywhere — videos are VfW DrawDib.
 
 ## 3. Shader-path experiment — decides d9web critical path
 
