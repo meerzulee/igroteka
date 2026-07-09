@@ -275,7 +275,11 @@ HLE, no Wine/no system emulator. **F1 done.**
       PeekMessage/GetMessage/DispatchMessage, **reverse thunk**: re-enter
       interpreter at wndproc EIP with args on the guest stack — reverse thunk
       LIVE (`fortochka/runtime/machine.cpp` `call_guest`, `u32web/`). Headless
-      pump done; canvas window is F3.
+      pump done. **Canvas window MET (paint side):** u32web has a client
+      framebuffer + minimal GDI (BeginPaint/FillRect/SetPixel/CreateSolidBrush/
+      GetClientRect); corpus `paint.exe` draws a gradient on WM_PAINT and it
+      renders to an HTML `<canvas>` in the browser (`runtime/web`), verified by
+      screenshot. Native `window_test --paint` dumps a matching PPM.
 - [ ] Message-pump ↔ rAF integration: frame pacing, spin-loop detection
       (PeekMessage-spin games burn 100% CPU — detect and yield)
 - [ ] `inweb`: mouse/keyboard events → messages + dinput8 state; pointer lock
