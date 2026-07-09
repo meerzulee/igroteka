@@ -636,7 +636,10 @@ window.Module = {
   // Stable version tag so the 9MB wasm caches between runs — Date.now() here
   // forced a full re-download and recompile on every single load.
   locateFile: (p) => p + '?v=' + ENGINE_BUILD,
-  arguments: ['-win'],
+  // Multiplayer launches skip the animated 3D shell map (-noshellmap): the
+  // autopilot drives straight through the menus into the lobby, so the shell
+  // map is pure boot cost. Single-player keeps the authentic menu battle.
+  arguments: window.CAFE_ENABLE ? ['-win', '-noshellmap'] : ['-win'],
   print: logAndReveal,
   printErr: logAndReveal,
   onAbort: (w) => {
