@@ -171,10 +171,29 @@ skirmish in under 10 minutes, no docs.
       engine straight into host/join, skipping the LAN-lobby hunt. Igroteka is the
       gathering layer (public area + party rooms); "Start" opens every player's tab
       with the param → straight into the game. (Auto-join built 2026-07-09.)
-- [ ] Mid-game reconnect: deterministic lockstep = `seed + command log`, so a
-      returning player replays the buffered command history to catch up, then
-      rejoins live (same tech as spectate/replay). Depends on the Phase-0
-      determinism gate being green.
+- [ ] **Mid-game reconnect** ("close tab → reopen → rejoin the LIVE match" — user
+      ask 2026-07-10). Retail ZH could NOT do this (a dropped player was gone), so
+      it's a custom feature. What already works: the cafe **identity/token persists**
+      (localStorage keyed by room, 30-min TTL), so reopening reconnects to the ROOM
+      and — if the match hasn't started yet — the autopilot rejoins the lobby. The
+      wall is the **simulation state**: deterministic lockstep means a client's game
+      state IS `seed + every command from turn 0`; a closed tab loses the in-memory
+      sim entirely. To rejoin a running match the returner must rebuild that exact
+      state. Mechanic:
+        1. **Determinism gate first** (Phase-0 CRC harness green) — else replay won't
+           reproduce the state and you desync. Hard prerequisite; not built yet.
+        2. A live peer (or the host) **buffers the full command log** (+ periodic state
+           snapshots so catch-up isn't always from turn 0). ZH's replay system already
+           records command logs — reuse it.
+        3. On reopen: fetch the log/snapshot from a peer over a DataChannel, **replay
+           deterministically** at high speed to the current turn, then splice into live
+           lockstep.
+        4. During catch-up the other players **pause** (the existing Disconnection
+           Menu vote is the natural hook — "wait for player").
+      Sub-milestone that's cheaper + useful now: **graceful match-in-progress handling**
+      — when a reopen finds the LAN game already started (gone from the lobby list),
+      the autopilot currently waits forever; instead detect it and show "match already
+      in progress — can't rejoin yet" rather than hanging.
 
 **Exit criterion (v1.0):** two browsers on different networks complete a 1v1 skirmish.
 The café moment.
