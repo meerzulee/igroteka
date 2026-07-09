@@ -21,11 +21,13 @@ constexpr uint32_t SEH_END = 0xFFFFFFFFu;
 uint32_t Machine::tib_addr() const { return TIB_ADDR; }
 
 uint32_t Machine::alloc(uint32_t size) {
-    size = (size + 7) & ~7u; // 8-align
+    // Align in 64-bit so a near-UINT32_MAX size can't wrap to a tiny value and
+    // silently under-allocate (the bounds check below would then pass).
+    uint64_t asz = ((uint64_t)size + 7) & ~UINT64_C(7);
     uint32_t va = heap_next_;
-    if ((uint64_t)va + size > arena_.size())
+    if ((uint64_t)va + asz > arena_.size())
         throw MachineError{"guest heap exhausted"};
-    heap_next_ += size;
+    heap_next_ += (uint32_t)asz;
     return va;
 }
 

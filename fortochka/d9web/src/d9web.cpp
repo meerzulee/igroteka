@@ -225,7 +225,13 @@ void dev_create_vertex_buffer(Machine& m, const Method& mm) {
 void vb_lock(Machine& m, const Method& mm) {
     // Lock(this, OffsetToLock, SizeToLock, ppbData, Flags). Hand back a direct
     // guest pointer into the backing store — no copy (identity-mapped memory).
-    uint32_t vb = m.arg(0), offset = m.arg(1), ppb = m.arg(3);
+    // Validate the range so the returned pointer stays inside the buffer (a
+    // guest that then memcpys past it can only corrupt its own sandbox, but
+    // this catches the mistake honestly). SizeToLock 0 = to end of buffer.
+    uint32_t vb = m.arg(0), offset = m.arg(1), size = m.arg(2), ppb = m.arg(3);
+    uint32_t length = m.read32(vb + VB_LENGTH);
+    if (offset > length || (size && (uint64_t)offset + size > length))
+        throw MachineError{"IDirect3DVertexBuffer9::Lock: range out of bounds"};
     m.write32(ppb, m.read32(vb + VB_BACKING) + offset);
     m.ret(mm.nargs, 0);
 }

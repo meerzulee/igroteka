@@ -29,6 +29,7 @@ CASES = [
     ("tri.exe", "window_test", ["--d3d", "--tri"], 0, "reached the backbuffer"),  # rasterized triangle
     ("tri_evil.exe", "window_test", ["--d3d", "--corner", "123456"], 0, "reached the backbuffer"),  # NaN vertex skipped, no UB
     ("vbtri.exe", "window_test", ["--d3d", "--tri"], 0, "reached the backbuffer"),  # triangle from a vertex buffer
+    ("vb_evil.exe", "window_test", ["--d3d"], 1, "guest heap exhausted"),  # huge VB rejected, no wrap
 ]
 
 

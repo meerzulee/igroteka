@@ -112,7 +112,14 @@ static int run_d3d(std::vector<uint8_t>& exe, const char* ppm_out,
     k32web::install(m);
     u32web::install(m);
     d9web::install(m);
-    m.run_entry();
+    try {
+        m.run_entry();
+    } catch (const runtime::MachineError& e) {
+        // A rejected-bad-input error (e.g. oversized resource) is the safe
+        // outcome for adversarial rungs; report it for the harness to assert.
+        printf("machine error: %s\n", e.what.c_str());
+        return 1;
+    }
 
     uint32_t w = 0, h = 0;
     const uint32_t* fb = d9web::framebuffer(w, h);
