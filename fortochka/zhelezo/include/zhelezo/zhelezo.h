@@ -82,7 +82,12 @@ struct RunResult {
 class DecodeCache;
 DecodeCache* decode_cache_new();
 void decode_cache_free(DecodeCache*);
-void decode_cache_clear(DecodeCache*); // drop all entries (e.g. after remap)
+// Drop all entries. INVARIANT (Codex-reviewed): byte-validation makes the cache
+// self-correct under self-modifying code, but NOT under unmap/permission change
+// — a page that is unmapped while its backing bytes survive would still hit.
+// Once k32web adds VirtualFree/unmap or execute-permission changes, call this on
+// every such transition (and teach fresh decode to honor map state).
+void decode_cache_clear(DecodeCache*);
 
 // Execute until an exit condition or max_steps instructions. Passing a cache is
 // a pure speedup; nullptr decodes every instruction fresh (identical results).
