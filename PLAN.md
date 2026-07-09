@@ -157,18 +157,39 @@ skirmish in under 10 minutes, no docs.
 > (matches must play through), THEN build mid-game rejoin on top. Rejoin depends on
 > a stable, non-stalling in-match transport anyway, so this order is also technical.
 
-- [ ] **Disconnection Menu / mid-match lockstep stall** (observed 2026-07-10: match
-      loads + renders, then the engine pops "DISCONNECTION MENU" mid-game). Root
-      cause: the deterministic-lockstep turn barrier can't advance because a peer's
-      turn-N command packets stop arriving in time. The DataChannel is
-      unreliable/unordered (UDP-like) and the engine's own `Transport`/
-      `ConnectionManager` ACK-resend is supposed to cover loss, but under the wasm
-      single-threaded main loop a slow/blocked recv starves the JS event loop, so
-      DataChannel messages don't get delivered → the barrier times out → disconnect
-      vote. Needs: (a) confirm the transport ACK/resend actually runs each frame on
-      wasm (the non-blocking state-machine barrier, not a spin-wait Sleep), (b)
-      desync-vs-drop distinction via the Phase-0 CRC harness, (c) tune turn length
-      vs RTT. This is THE core Phase-3 netcode task.
+- [~] **Disconnection Menu / mid-match lockstep stall** — ROOT CAUSE TRACED
+      (2026-07-10, full read-only investigation; two mitigations applied, verdict
+      pending live test):
+      * Trigger: `DisconnectManager.cpp:104` is a pure STALL DETECTOR — logic frame
+        not advancing for **5000ms wall-clock** (`m_networkDisconnectTime`,
+        GlobalData.cpp:1007) pops the menu. A frame advances only when EVERY peer's
+        per-frame FRAMEINFO packet arrived (`FrameData.cpp:102`,
+        `ConnectionManager.cpp:970`) — even empty frames.
+      * Ranked causes: **(1) rAF throttling** — the whole engine incl. netcode pump
+        is a requestAnimationFrame callback (GameEngine.cpp:1042); browsers
+        pause/throttle rAF for hidden/OCCLUDED windows, so a covered peer stops
+        emitting FRAMEINFO while the visible peer's real-time 5s deadline runs out.
+        (JS ping/status stays alive — setInterval only clamps — hence "connected but
+        frozen".) **(2) Dial-up retry tuning vs lossy channel** — DataChannel was
+        `maxRetransmits:0` (true UDP) but a lost FRAMEINFO resends only every
+        **2000ms** (`Connection.cpp:41`, adaptive code commented out) in 250-500ms
+        bursts (`Network.cpp:650`) → ~2 retries fit the 5s window; ~3 correlated
+        losses = menu. **(3)** 256-slot transport buffer truncates post-hitch
+        backlogs silently (`Transport.cpp:345`, `NetworkDefs.h:82`) — amplifier.
+      * Applied (2026-07-10): bridge channel → `maxRetransmits:5` (still unordered;
+        SCTP retries at RTT speed = near-lossless without unbounded latency);
+        engine `m_retryTime` 2000→300ms under `__EMSCRIPTEN__` (~16 retries in the
+        window). Kills #2/#3 exposure.
+      * Discriminator for live test: both windows FULLY visible side-by-side —
+        if the menu still pops it was #2 (now fixed); if it only pops when a window
+        is covered/backgrounded it's #1. Deterministic ~6s = freeze; variable = loss.
+      * Remaining for #1 (peer backgrounded — real users WILL tab away): rAF pause
+        means that peer genuinely stops simulating; menu is then CORRECT behavior.
+        Options later: `emscripten_set_main_loop_timing(EM_TIMING_SETTIMEOUT)`
+        fallback so a hidden tab ticks at ~1Hz (keep-alives flow, menu waits
+        instead of vote-out), and/or pause-detection UX ("player tabbed away").
+      * Still needed: desync-vs-drop distinction via Phase-0 CRC harness; turn
+        length vs RTT tuning.
 - [ ] Wire the Disconnection Menu's empty ping column to the same latency source
       (`Connection::m_averageLatency` or the bridge RTT). Cosmetic vs the stall above.
 - [ ] Auto-join / autopilot: boot params (`?host=1` / `?autojoin=1`) drive the

@@ -298,7 +298,13 @@
     };
     pc.ondatachannel = function (e) { self._bind(e.channel); };
     if (initiator)
-      this._bind(pc.createDataChannel("game", { ordered: false, maxRetransmits: 0 }));
+      // ordered:false keeps UDP-like delivery (no head-of-line blocking), but
+      // maxRetransmits:5 lets SCTP retry lost packets at RTT speed. The engine's
+      // own resend is dial-up-tuned (2s retry vs a 5s disconnect window —
+      // Connection.cpp), so raw packet loss stalled the lockstep barrier into
+      // the Disconnection Menu. Bounded retransmits = near-lossless without
+      // unbounded latency.
+      this._bind(pc.createDataChannel("game", { ordered: false, maxRetransmits: 5 }));
   }
   PeerLink.prototype._bind = function (ch) {
     var self = this;
