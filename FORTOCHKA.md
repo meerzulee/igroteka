@@ -319,8 +319,13 @@ plus the SEH/`seh.exe` item below, remain for F2/F3 proper.
       canvas (screenshot-verified). **Triangle MET:** SetFVF + DrawPrimitiveUP
       (XYZRHW|DIFFUSE) → barycentric Gouraud software rasterizer → the canonical
       RGB triangle in a browser tab (`tri.exe`, screenshot). Method-table design
-      (Fable-reviewed): each new device method is one row. Next: VB/IB/texture
-      resources, the FFP transform path (non-pretransformed XYZ), WebGL backend.
+      (Fable-reviewed): each new device method is one row. **Vertex buffers
+      MET:** IDirect3DVertexBuffer9 (3rd COM interface); CreateVertexBuffer →
+      Lock (raw guest pointer, identity-mapped, no marshalling) → Unlock →
+      SetStreamSource → DrawPrimitive; `vbtri.exe` draws the triangle from a
+      real VB. Rasterizer hardened vs guest floats (Codex: finite guards,
+      primitive cap, fill budget). Next: index buffers, textures, FFP transform
+      path (non-pretransformed XYZ), WebGL backend.
 - [ ] Caps persona (Radeon 9700), CheckDeviceFormat table
 - [ ] FFP path: port/extend the d8web synthesizer to D3D9 stage semantics
 - [ ] Shader translator: vs_1_1 → GLSL ES first, then ps_1_1–ps_1_4, then
