@@ -113,6 +113,16 @@ int Machine::run_entry(uint64_t step_budget) {
 
 uint32_t Machine::call_guest(uint32_t func_va, const std::vector<uint32_t>& args,
                              uint64_t step_budget) {
+    // Each reverse thunk is one host C++ frame; a guest that re-enters without
+    // bound (WndProc that SendMessages itself) would blow the native stack.
+    // Cap the nesting — real apps stay well under this; runaway guests error.
+    struct DepthGuard {
+        unsigned& d;
+        ~DepthGuard() { --d; }
+    } guard{++reentry_depth_};
+    if (reentry_depth_ > kMaxReentry)
+        throw MachineError{"reverse-thunk recursion too deep (guest runaway?)"};
+
     const uint32_t saved_esp = cpu_.gpr[ESP];
     const uint32_t saved_eip = cpu_.eip;
 

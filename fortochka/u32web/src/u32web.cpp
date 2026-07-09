@@ -81,13 +81,17 @@ void install(Machine& m) {
         if (name == "GetMessageA") {
             // BOOL GetMessageA(LPMSG, HWND, UINT min, UINT max). Returns 0 on
             // WM_QUIT (loop terminator), nonzero otherwise, -1 on error.
+            // Real GetMessage BLOCKS on an empty queue; tier-0 headless has no
+            // event source, and a correct run always posts WM_QUIT before the
+            // queue drains. So an empty queue here means a starved pump — error
+            // loudly rather than silently synthesizing a quit that could mask a
+            // real message-generation bug. F3's rAF pump replaces this with a
+            // real yield/block.
             uint32_t lpmsg = m.arg(0);
-            if (s.queue.empty()) {
-                // No real blocking source in tier 0: treat empty as quit.
-                write_msg(m, lpmsg, {kFakeHwnd, WM_QUIT, 0, 0});
-                m.ret(4, 0);
-                return true;
-            }
+            if (s.queue.empty())
+                throw runtime::MachineError{
+                    "GetMessageA on empty queue with no WM_QUIT posted "
+                    "(tier-0 headless has no blocking source)"};
             Msg msg = s.queue.front();
             s.queue.pop_front();
             write_msg(m, lpmsg, msg);

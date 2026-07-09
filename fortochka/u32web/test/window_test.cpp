@@ -10,6 +10,7 @@
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 
 #include "runtime/machine.h"
@@ -40,12 +41,41 @@ std::vector<uint8_t> slurp(const char* path) {
 // header dependency churn (it lives in k32web/).
 namespace k32web { void install(runtime::Machine& m); }
 
+constexpr uint32_t WM_SELF = 0x0400 + 7;
+
+// recurse.exe mode: a self-SendMessaging WndProc must trip the depth guard and
+// raise a MachineError instead of overflowing the host stack.
+static int run_recurse_guard(std::vector<uint8_t>& exe) {
+    Machine m(64u << 20);
+    m.load(exe.data(), exe.size());
+    k32web::install(m);
+    u32web::install(m);
+    u32web::post_message(HWND_TOKEN, WM_SELF, 0, 0);
+    try {
+        m.run_entry();
+    } catch (const runtime::MachineError& e) {
+        printf("PASS recurse.exe — depth guard tripped cleanly: %s\n",
+               e.what.c_str());
+        return 0;
+    }
+    fprintf(stderr, "FAIL: unbounded recursion did not raise MachineError\n");
+    return 1;
+}
+
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        fprintf(stderr, "usage: window_test window.exe\n");
+    bool recurse = false;
+    const char* path = nullptr;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--recurse-guard")) recurse = true;
+        else path = argv[i];
+    }
+    if (!path) {
+        fprintf(stderr, "usage: window_test [--recurse-guard] window.exe\n");
         return 2;
     }
-    std::vector<uint8_t> exe = slurp(argv[1]);
+    std::vector<uint8_t> exe = slurp(path);
+
+    if (recurse) return run_recurse_guard(exe);
 
     Machine m(64u << 20);
     try {

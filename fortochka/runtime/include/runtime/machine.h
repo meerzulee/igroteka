@@ -70,12 +70,18 @@ class Machine {
     uint32_t hostcall_addr(uint32_t slot) const;
     void dispatch_import(uint32_t slot);
 
+    // Reverse-thunk nesting cap. Legit SendMessage chains are a few dozen deep;
+    // this bounds host C++ recursion so a runaway guest errors instead of
+    // overflowing the native stack.
+    static constexpr unsigned kMaxReentry = 512;
+
     std::vector<uint8_t> arena_;
     zhelezo::Cpu cpu_;
     std::vector<Handler> handlers_;
     std::vector<const peload::Import*> slots_; // index by hostcall slot
     uint32_t next_slot_ = 0;
     uint32_t reentry_slot_ = 0; // reserved sentinel for reverse-thunk returns
+    unsigned reentry_depth_ = 0; // current reverse-thunk nesting depth
     peload::Image image_;
     bool loaded_ = false;
 };
