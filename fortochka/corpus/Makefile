@@ -9,7 +9,8 @@ LDFLAGS := -nostdlib -Wl,--entry=_start -Wl,--subsystem,console \
 BIN := bin
 RUNGS := $(BIN)/hello.exe $(BIN)/window.exe $(BIN)/recurse.exe $(BIN)/seh.exe \
          $(BIN)/seh_chain.exe $(BIN)/seh_noncont.exe $(BIN)/fpu.exe \
-         $(BIN)/paint.exe $(BIN)/d3dclear.exe $(BIN)/tri.exe $(BIN)/tri_evil.exe
+         $(BIN)/paint.exe $(BIN)/d3dclear.exe $(BIN)/tri.exe $(BIN)/tri_evil.exe \
+         $(BIN)/vbtri.exe
 
 all: $(RUNGS)
 

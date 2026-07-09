@@ -28,14 +28,22 @@ struct State {
     uint32_t width = 640, height = 480;
     std::vector<uint32_t> backbuffer; // ARGB 0xFFRRGGBB, width*height
     bool presented = false;
-    uint32_t fvf = 0;                        // current SetFVF
-    uint32_t d3d9_vtbl = 0, device_vtbl = 0; // 0 until first use
+    uint32_t fvf = 0; // current SetFVF
+    // Bound stream 0 (SetStreamSource): the vertex-buffer COM object, byte
+    // offset into it, and vertex stride.
+    uint32_t stream_vb = 0, stream_offset = 0, stream_stride = 0;
+    uint32_t d3d9_vtbl = 0, device_vtbl = 0, vbuffer_vtbl = 0; // 0 until first use
     void ensure_bb() {
         if (backbuffer.size() != (size_t)width * height)
             backbuffer.assign((size_t)width * height, 0xFF000000u);
     }
 };
 State g_state;
+
+// Vertex-buffer object state (past the vtable ptr at +0): refcount, the backing
+// store's guest VA, and its length in bytes.
+constexpr uint32_t VB_REFCOUNT = 4, VB_BACKING = 8, VB_LENGTH = 12;
+constexpr uint32_t VB_STATE_BYTES = 12;
 
 // Read a guest float (IEEE-754 bits).
 inline float read_f32(Machine& m, uint32_t va) {
@@ -146,31 +154,79 @@ uint64_t raster_triangle(State& s, const Vtx& a, const Vtx& b, const Vtx& c) {
     return (uint64_t)(maxx - minx + 1) * (maxy - miny + 1);
 }
 
-// A single DrawPrimitiveUP call may draw at most this many primitives (era
+// A single draw call may cover at most this many primitives (era
 // MaxPrimitiveCount is ~5.5M) and touch at most this much fill (64 screens),
 // bounding attacker-controlled work regardless of count / triangle size.
 constexpr uint32_t kMaxPrimitives = 4'000'000;
 
-void dev_draw_primitive_up(Machine& m, const Method& mm) {
-    // DrawPrimitiveUP(this, PrimitiveType, PrimitiveCount, pVertexData, Stride).
-    uint32_t type = m.arg(1), count = m.arg(2), data = m.arg(3), stride = m.arg(4);
-    if (type != 4 /*D3DPT_TRIANGLELIST*/)
-        throw MachineError{"DrawPrimitiveUP: only D3DPT_TRIANGLELIST supported"};
+// Read one XYZRHW|DIFFUSE vertex from guest memory (x at +0, y +4, color +16).
+inline Vtx read_vtx(Machine& m, uint32_t p) {
+    return {read_f32(m, p + 0), read_f32(m, p + 4), m.read32(p + 16)};
+}
+
+// Rasterize `count` triangles whose vertex j lives at base + (start+j)*stride.
+// Shared by DrawPrimitiveUP (base=user pointer) and DrawPrimitive (base=bound
+// vertex buffer). Enforces the primitive cap and the fill budget.
+void draw_tris(Machine& m, uint32_t count, uint32_t base, uint32_t start,
+               uint32_t stride) {
     if (g_state.fvf != (0x004 | 0x040) /*XYZRHW|DIFFUSE*/)
-        throw MachineError{"DrawPrimitiveUP: only FVF XYZRHW|DIFFUSE supported"};
+        throw MachineError{"draw: only FVF XYZRHW|DIFFUSE supported"};
     if (count > kMaxPrimitives)
-        throw MachineError{"DrawPrimitiveUP: PrimitiveCount too large"};
+        throw MachineError{"draw: PrimitiveCount too large"};
     g_state.ensure_bb();
     const uint64_t fill_budget = 64ull * g_state.width * g_state.height;
     uint64_t filled = 0;
-    auto vtx = [&](uint32_t i) -> Vtx {
-        uint32_t p = data + i * stride;
-        return {read_f32(m, p + 0), read_f32(m, p + 4), m.read32(p + 16)};
-    };
+    auto va = [&](uint32_t j) { return base + (start + j) * stride; };
     for (uint32_t t = 0; t < count; t++) {
-        filled += raster_triangle(g_state, vtx(3 * t), vtx(3 * t + 1), vtx(3 * t + 2));
+        filled += raster_triangle(g_state, read_vtx(m, va(3 * t)),
+                                  read_vtx(m, va(3 * t + 1)),
+                                  read_vtx(m, va(3 * t + 2)));
         if (filled > fill_budget) break; // bound total attacker-controlled fill
     }
+}
+
+void dev_draw_primitive_up(Machine& m, const Method& mm) {
+    // DrawPrimitiveUP(this, PrimitiveType, PrimitiveCount, pVertexData, Stride).
+    if (m.arg(1) != 4 /*D3DPT_TRIANGLELIST*/)
+        throw MachineError{"DrawPrimitiveUP: only D3DPT_TRIANGLELIST supported"};
+    draw_tris(m, m.arg(2), m.arg(3) /*data*/, 0, m.arg(4) /*stride*/);
+    m.ret(mm.nargs, 0);
+}
+void dev_draw_primitive(Machine& m, const Method& mm) {
+    // DrawPrimitive(this, PrimitiveType, StartVertex, PrimitiveCount) — draws
+    // from the vertex buffer bound via SetStreamSource.
+    if (m.arg(1) != 4 /*D3DPT_TRIANGLELIST*/)
+        throw MachineError{"DrawPrimitive: only D3DPT_TRIANGLELIST supported"};
+    if (!g_state.stream_vb)
+        throw MachineError{"DrawPrimitive: no vertex buffer bound"};
+    uint32_t backing = m.read32(g_state.stream_vb + VB_BACKING);
+    draw_tris(m, m.arg(3) /*count*/, backing + g_state.stream_offset,
+              m.arg(2) /*StartVertex*/, g_state.stream_stride);
+    m.ret(mm.nargs, 0);
+}
+void dev_set_stream_source(Machine& m, const Method& mm) {
+    // SetStreamSource(this, StreamNumber, pStreamData, OffsetInBytes, Stride).
+    g_state.stream_vb = m.arg(2);
+    g_state.stream_offset = m.arg(3);
+    g_state.stream_stride = m.arg(4);
+    m.ret(mm.nargs, 0);
+}
+void dev_create_vertex_buffer(Machine& m, const Method& mm) {
+    // CreateVertexBuffer(this, Length, Usage, FVF, Pool, ppVB, pSharedHandle).
+    uint32_t length = m.arg(1), ppVB = m.arg(5);
+    uint32_t backing = m.alloc(length ? length : 4); // identity-mapped store
+    uint32_t vb = m.create_com_instance(g_state.vbuffer_vtbl, VB_STATE_BYTES);
+    m.write32(vb + VB_REFCOUNT, 1);
+    m.write32(vb + VB_BACKING, backing);
+    m.write32(vb + VB_LENGTH, length);
+    m.write32(ppVB, vb);
+    m.ret(mm.nargs, 0);
+}
+void vb_lock(Machine& m, const Method& mm) {
+    // Lock(this, OffsetToLock, SizeToLock, ppbData, Flags). Hand back a direct
+    // guest pointer into the backing store — no copy (identity-mapped memory).
+    uint32_t vb = m.arg(0), offset = m.arg(1), ppb = m.arg(3);
+    m.write32(ppb, m.read32(vb + VB_BACKING) + offset);
     m.ret(mm.nargs, 0);
 }
 
@@ -192,7 +248,8 @@ constexpr Method kDeviceVtbl[] = {
     {"SetDialogBoxMode", 0, nullptr}, {"SetGammaRamp", 0, nullptr},
     {"GetGammaRamp", 0, nullptr}, {"CreateTexture", 0, nullptr},
     {"CreateVolumeTexture", 0, nullptr}, {"CreateCubeTexture", 0, nullptr},
-    {"CreateVertexBuffer", 0, nullptr}, {"CreateIndexBuffer", 0, nullptr},
+    {"CreateVertexBuffer", 7, dev_create_vertex_buffer},
+    {"CreateIndexBuffer", 0, nullptr},
     {"CreateRenderTarget", 0, nullptr}, {"CreateDepthStencilSurface", 0, nullptr},
     {"UpdateSurface", 0, nullptr}, {"UpdateTexture", 0, nullptr},
     {"GetRenderTargetData", 0, nullptr}, {"GetFrontBufferData", 0, nullptr},
@@ -219,7 +276,7 @@ constexpr Method kDeviceVtbl[] = {
     {"GetCurrentTexturePalette", 0, nullptr}, {"SetScissorRect", 0, nullptr},
     {"GetScissorRect", 0, nullptr}, {"SetSoftwareVertexProcessing", 0, nullptr},
     {"GetSoftwareVertexProcessing", 0, nullptr}, {"SetNPatchMode", 0, nullptr},
-    {"GetNPatchMode", 0, nullptr}, {"DrawPrimitive", 0, nullptr},
+    {"GetNPatchMode", 0, nullptr}, {"DrawPrimitive", 4, dev_draw_primitive},
     {"DrawIndexedPrimitive", 0, nullptr}, {"DrawPrimitiveUP", 5, dev_draw_primitive_up},
     {"DrawIndexedPrimitiveUP", 0, nullptr}, {"ProcessVertices", 0, nullptr},
     {"CreateVertexDeclaration", 0, nullptr}, {"SetVertexDeclaration", 0, nullptr},
@@ -229,7 +286,7 @@ constexpr Method kDeviceVtbl[] = {
     {"SetVertexShaderConstantF", 0, nullptr}, {"GetVertexShaderConstantF", 0, nullptr},
     {"SetVertexShaderConstantI", 0, nullptr}, {"GetVertexShaderConstantI", 0, nullptr},
     {"SetVertexShaderConstantB", 0, nullptr}, {"GetVertexShaderConstantB", 0, nullptr},
-    {"SetStreamSource", 0, nullptr}, {"GetStreamSource", 0, nullptr},
+    {"SetStreamSource", 5, dev_set_stream_source}, {"GetStreamSource", 0, nullptr},
     {"SetStreamSourceFreq", 0, nullptr}, {"GetStreamSourceFreq", 0, nullptr},
     {"SetIndices", 0, nullptr}, {"GetIndices", 0, nullptr},
     {"CreatePixelShader", 0, nullptr}, {"SetPixelShader", 0, nullptr},
@@ -274,6 +331,19 @@ constexpr Method kD3d9Vtbl[] = {
 static_assert(sizeof(kD3d9Vtbl) / sizeof(Method) == 17,
               "IDirect3D9 has 17 vtable entries");
 
+// IDirect3DVertexBuffer9 (14 methods). Lock hands back a guest pointer into the
+// backing store; Unlock is a no-op (identity-mapped, data already in memory).
+constexpr Method kVBufferVtbl[] = {
+    {"QueryInterface", 3, com_query_interface}, {"AddRef", 1, com_addref},
+    {"Release", 1, com_release}, {"GetDevice", 0, nullptr},
+    {"SetPrivateData", 0, nullptr}, {"GetPrivateData", 0, nullptr},
+    {"FreePrivateData", 0, nullptr}, {"SetPriority", 0, nullptr},
+    {"GetPriority", 0, nullptr}, {"PreLoad", 0, nullptr}, {"GetType", 0, nullptr},
+    {"Lock", 5, vb_lock}, {"Unlock", 1, ret_ok}, {"GetDesc", 0, nullptr},
+};
+static_assert(sizeof(kVBufferVtbl) / sizeof(Method) == 14,
+              "IDirect3DVertexBuffer9 has 14 vtable entries");
+
 // Dispatch one vtable call: look the method up in the interface's table, throw
 // a named error if unimplemented, else run it.
 template <const Method* Vtbl, size_t N>
@@ -290,6 +360,9 @@ void device_method(Machine& m, unsigned i) {
 void d3d9_method(Machine& m, unsigned i) {
     dispatch<kD3d9Vtbl, 17>(m, i, "IDirect3D9");
 }
+void vbuffer_method(Machine& m, unsigned i) {
+    dispatch<kVBufferVtbl, 14>(m, i, "IDirect3DVertexBuffer9");
+}
 
 } // namespace
 
@@ -305,6 +378,7 @@ void install(Machine& m) {
             if (!g_state.d3d9_vtbl) {
                 g_state.d3d9_vtbl = m.create_com_vtable(17, d3d9_method);
                 g_state.device_vtbl = m.create_com_vtable(119, device_method);
+                g_state.vbuffer_vtbl = m.create_com_vtable(14, vbuffer_method);
             }
             uint32_t obj = m.create_com_instance(g_state.d3d9_vtbl, OBJ_STATE_BYTES);
             m.write32(obj + OBJ_REFCOUNT, 1);
