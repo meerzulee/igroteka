@@ -1,0 +1,110 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>cafe — WebRTC lobby demo</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.2rem; }
+  input, button { font: inherit; padding: 4px 8px; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+  #roster li { list-style: none; }
+  .host::after { content: " 👑"; }
+  .on { color: #0a0; } .off { color: #999; }
+  #log { background: #111; color: #6f6; padding: 8px; height: 220px; overflow: auto;
+         white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 12px; }
+  fieldset { border: 1px solid #ccc; margin: 10px 0; }
+</style>
+
+<h1>cafe — WebRTC lobby demo</h1>
+<p>Open this page in <b>two tabs</b> (or two browsers / two devices), join the same
+room, and watch a peer-to-peer DataChannel open. Messages you send go browser↔browser,
+<b>not</b> through the server.</p>
+
+<div class="row">
+  <label>server <input id="base" size="34" /></label>
+</div>
+<div class="row">
+  <label>room <input id="room" value="test" size="10" /></label>
+  <label>name <input id="name" size="10" /></label>
+  <button id="join">Join</button>
+  <button id="ready" disabled>Ready</button>
+  <button id="start" disabled>Start (host)</button>
+</div>
+
+<fieldset><legend>roster</legend><ul id="roster"></ul></fieldset>
+
+<div class="row">
+  <input id="msg" placeholder="peer-to-peer message" size="30" disabled />
+  <button id="send" disabled>Send over DataChannel</button>
+</div>
+
+<div id="log"></div>
+
+<script type="module">
+  import { CafeClient } from "./signaling.js";
+
+  const $ = (id) => document.getElementById(id);
+  const log = (...a) => {
+    $("log").textContent += a.join(" ") + "\n";
+    $("log").scrollTop = $("log").scrollHeight;
+  };
+
+  // Default to same origin; for local `wrangler dev` use http://localhost:8787
+  $("base").value = location.origin.startsWith("http")
+    ? location.origin
+    : "http://localhost:8787";
+  $("name").value = "p" + Math.floor(Math.random() * 1000);
+
+  let client;
+  let ready = false;
+
+  $("join").onclick = async () => {
+    client = new CafeClient();
+    client.addEventListener("roster", (e) => {
+      const ul = $("roster");
+      ul.innerHTML = "";
+      for (const p of e.detail) {
+        const li = document.createElement("li");
+        li.textContent = `${p.name} (${p.id})${p.ready ? " ✓" : ""}`;
+        if (p.host) li.className = "host";
+        ul.appendChild(li);
+      }
+    });
+    client.addEventListener("chat", (e) => log(`[chat] ${e.detail.name}: ${e.detail.text}`));
+    client.addEventListener("start", (e) =>
+      log(`[START] seed=${e.detail.seed} map=${e.detail.map} slots=${e.detail.slots.length}`)
+    );
+    client.addEventListener("peer-connected", (e) => log(`[peer] ${e.detail.peerId} connected (ICE ok)`));
+    client.addEventListener("peer-lost", (e) => log(`[peer] ${e.detail.peerId} lost (${e.detail.state})`));
+    client.addEventListener("channel-open", (e) => {
+      log(`[channel] OPEN to ${e.detail.peerId} — P2P DataChannel live`);
+      $("msg").disabled = false;
+      $("send").disabled = false;
+    });
+    client.addEventListener("data", (e) => {
+      const text = new TextDecoder().decode(e.detail.data);
+      log(`[recv ${e.detail.peerId}] ${text}`);
+    });
+    client.addEventListener("disconnected", () => log("[ws] disconnected"));
+
+    const w = await client.connect($("base").value, $("room").value, $("name").value);
+    log(`[ws] joined room "${$("room").value}" as ${w.youAre}${w.host ? " (host)" : ""}`);
+    log(`[ice] ${JSON.stringify(w.iceServers)}`);
+    $("ready").disabled = false;
+    $("start").disabled = !w.host;
+    $("join").disabled = true;
+  };
+
+  $("ready").onclick = () => {
+    ready = !ready;
+    client.ready(ready);
+    $("ready").textContent = ready ? "Unready" : "Ready";
+  };
+  $("start").onclick = () => client.start($("room").value + "-map");
+  $("send").onclick = () => {
+    const bytes = new TextEncoder().encode($("msg").value);
+    client.broadcast(bytes);
+    log(`[sent] ${$("msg").value}`);
+    $("msg").value = "";
+  };
+</script>

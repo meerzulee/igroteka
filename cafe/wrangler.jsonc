@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "igroteka-cafe",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-05-07",
+  "durable_objects": {
+    "bindings": [{ "name": "LOBBY", "class_name": "LobbyRoom" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["LobbyRoom"] }],
+  "observability": { "enabled": true },
+  "routes": [{ "pattern": "cafe-nw.mrz.sh", "custom_domain": true }]
+
+  // Optional TURN relay (see src/turn.js). Set as secrets, not here:
+  //   wrangler secret put TURN_KEY_ID
+  //   wrangler secret put TURN_KEY_API_TOKEN
+}
