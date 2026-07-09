@@ -275,11 +275,14 @@ HLE, no Wine/no system emulator. **F1 done.**
 - [~] SEH: `fs:[0]` chain walk, guest handler invocation, unwind — `seh.exe`
       corpus binary passes. Chain walk + handler invocation + disposition
       (ContinueExecution/ContinueSearch) LIVE: TIB/fs_base in `machine.cpp`,
-      dispatcher + `RaiseException` in `k32web.cpp`; `seh.exe` (single handler)
-      and `seh_chain.exe` (2 frames, inner ContinueSearch → outer handles) both
-      pass. **Still pending:** RtlUnwind / `__except` block transfer, fault→SEH
-      dispatch (explicit RaiseException only), real CONTEXT (zeroed stub now).
-      Codex reviewing the design before these increments.
+      dispatcher + `RaiseException` in `k32web.cpp`; `seh.exe`, `seh_chain.exe`
+      (2 nested frames, inner ContinueSearch → outer handles), `seh_noncont.exe`
+      (noncontinuable rejected) all pass. Codex-reviewed + hardened: per-dispatch
+      stack records (nested-exception safe), populated CONTEXT, frame-order chain
+      validation (rejects cyclic/corrupt), strict disposition/noncontinuable
+      rules, TIB-overlap guard. **Still pending (documented in-source):** RtlUnwind
+      / `__except` block transfer, fault→SEH dispatch (explicit RaiseException
+      only), FP/extended CONTEXT.
 
 **Exit criterion:** `window.exe` opens a window, paints on WM_PAINT, responds
 to input — full round trip guest→host→guest.
