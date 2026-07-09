@@ -42,3 +42,6 @@ fortochka/**/build*/
 fortochka/corpus/bin/
 fortochka/**/*.o
 fortochka/**/bench/*.bin
+
+# Fortochka: web build artifacts
+build-web/
