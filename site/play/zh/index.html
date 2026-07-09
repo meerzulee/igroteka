@@ -154,6 +154,34 @@
     </div>
   </div>
 
+<script>
+  // ── Multiplayer wiring (private party) ──────────────────────────────────
+  // A ?room= launch is a password-gated party. The signed lobby token was put
+  // in localStorage by the party page (/party) after the password was proven.
+  // Without it the cafe DO rejects the lobby socket, so a LEAKED game link
+  // carries no access — we bounce it to /party to enter the password. This
+  // classic script runs during parse, before the deferred module below, so the
+  // redirect cleanly skips asset staging. Single-player (no ?room=) is untouched.
+  (function () {
+    var qs = new URLSearchParams(location.search);
+    var room = qs.get('room');
+    if (!room) return; // single-player — no lobby, no transport
+    var token = localStorage.getItem('cafe-token:' + room);
+    if (!token) { location.replace('/party?code=' + encodeURIComponent(room)); return; }
+    var role = localStorage.getItem('cafe-role:' + room) || 'guest';
+    window.CAFE_ENABLE = true;
+    window.CAFE_URL   = qs.get('cafe') || 'https://cafe-nw.mrz.sh';
+    window.CAFE_ROOM  = room;
+    window.CAFE_NAME  = qs.get('player') || localStorage.getItem('cafe-name') || 'General';
+    window.CAFE_TOKEN = token;
+    // Engine autopilot: host CREATES the LAN game, guests auto-JOIN it. Role is
+    // authoritative from the token the party page stored — not a URL flag.
+    window.CAFE_AUTO  = role === 'host' ? 'host' : 'join';
+    var s = document.createElement('script');
+    s.src = 'webrtc_udp.js?v=' + Date.now();
+    document.head.appendChild(s);
+  })();
+</script>
 <script type="module">
 import { ZH_MANIFEST, ZH_CURSORS, ZH_OPTIONAL, opfsInventory, missingFiles,
          opfsReadFile, loadingImageURL, nativeBarAtlas, drawNativeBar,

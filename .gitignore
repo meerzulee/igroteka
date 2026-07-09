@@ -36,3 +36,6 @@ dvijoke/
 site/play/zh/GeneralsXZH.js
 site/play/zh/GeneralsXZH.wasm
 site/gamedata
+
+# Cloudflare Workers local state
+.wrangler/

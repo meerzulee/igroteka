@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Private Party — Igroteka</title>
+  <link rel="stylesheet" href="../xp.css">
+  <style>
+    :root { --blue:#2b63cf; --blue2:#5b9ae6; --gold:#e8b34b; --ink:#c9d4e0; }
+    * { box-sizing: border-box; }
+    html, body { margin:0; height:100%; }
+    body {
+      color: var(--ink); font: 14px/1.5 "Segoe UI", Roboto, sans-serif;
+      display:flex; align-items:center; justify-content:center; padding:18px;
+      background:
+        radial-gradient(ellipse 80% 50% at 50% 30%, rgba(40,70,120,.4), transparent 70%),
+        repeating-linear-gradient(0deg, transparent 0 38px, rgba(70,110,170,.05) 38px 39px),
+        repeating-linear-gradient(90deg, transparent 0 38px, rgba(70,110,170,.05) 38px 39px),
+        linear-gradient(#05070d, #0a1220 60%, #060a12);
+      background-attachment: fixed;
+    }
+    .wrap { width:100%; max-width:430px; }
+    /* C&C wordmark, matching the game loader */
+    #wm { text-align:center; font-weight:800; letter-spacing:2px; line-height:1;
+          margin-bottom:16px; }
+    #wm .a { font-size:13px; color:#8fa9c8; letter-spacing:5px; }
+    #wm .b { font-size:34px; margin-top:5px;
+      background:linear-gradient(#eaf2ff,#7fa8d8 60%,#3f6ba8);
+      -webkit-background-clip:text; background-clip:text; color:transparent; }
+    #wm .c { font-size:12px; color:var(--gold); letter-spacing:8px; margin-top:3px; }
+    .window { box-shadow:0 8px 40px rgba(0,0,0,.6); }
+    .window-body { padding:16px 16px 14px; }
+    .lead { font-size:12px; color:#8fa9c8; margin:0 0 14px; text-align:center;
+            letter-spacing:.4px; }
+    /* segmented Create / Join toggle */
+    .seg { display:flex; margin:0 0 16px; border:1px solid #3a5378; border-radius:5px;
+           overflow:hidden; }
+    .seg button { flex:1; padding:9px 0; border:0; background:#0e1626; color:#9fb4d4;
+                  font:600 13px "Segoe UI",sans-serif; cursor:pointer; letter-spacing:.5px; }
+    .seg button.on { background:linear-gradient(#3f7bd6,#2b63cf); color:#fff; }
+    label { display:block; font-size:11px; text-transform:uppercase; letter-spacing:1px;
+            color:#7f97b8; margin:12px 0 4px; }
+    input {
+      width:100%; padding:9px 10px; background:#0b1220; color:#e6eefb;
+      border:1px solid #33507a; border-radius:4px; font:14px "Segoe UI",sans-serif;
+      outline:none;
+    }
+    input:focus { border-color:var(--blue2); box-shadow:0 0 0 2px rgba(91,154,230,.25); }
+    .go {
+      width:100%; margin-top:18px; padding:11px 0; border:1px solid #2f6bc9; border-radius:5px;
+      background:linear-gradient(#4f8be6,#2b63cf); color:#fff; cursor:pointer;
+      font:700 14px "Segoe UI",sans-serif; letter-spacing:.6px;
+      box-shadow:0 2px 10px rgba(43,99,207,.4);
+    }
+    .go:hover { background:linear-gradient(#5f9bf0,#3670d6); }
+    .go:disabled { opacity:.6; cursor:default; }
+    .err { margin-top:12px; min-height:16px; color:#ff9a8f; font-size:12.5px; text-align:center; }
+    .note { margin-top:14px; font-size:11px; color:#6f86a6; text-align:center;
+            border-top:1px solid #1c2a3f; padding-top:11px; }
+    .note b { color:var(--gold); }
+    /* created panel */
+    .created { text-align:center; }
+    .code { font:800 26px ui-monospace, monospace; letter-spacing:3px; color:#eaf2ff;
+            background:#0b1220; border:1px dashed #3a5378; border-radius:6px;
+            padding:12px; margin:6px 0 4px; user-select:all; }
+    .copy { font-size:11px; color:var(--blue2); cursor:pointer; background:none; border:0;
+            text-decoration:underline; }
+    .share { font-size:11px; color:#6f86a6; word-break:break-all; margin:8px 0 0; }
+    .hidden { display:none; }
+    a { color:var(--gold); }
+    .back { display:inline-block; margin-top:14px; font-size:12px; color:#7f97b8;
+            text-decoration:none; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div id="wm">
+      <div class="a">COMMAND &amp; CONQUER</div>
+      <div class="b">GENERALS</div>
+      <div class="c">ZERO HOUR</div>
+    </div>
+
+    <div class="window">
+      <div class="title-bar">
+        <div class="title-bar-text">Private Party</div>
+      </div>
+      <div class="window-body">
+
+        <!-- create / join forms -->
+        <div id="forms">
+          <p class="lead">Gather your friends in a password-protected room, then
+            launch straight into the battle.</p>
+
+          <div class="seg">
+            <button id="tabCreate" class="on" type="button">Create</button>
+            <button id="tabJoin" type="button">Join</button>
+          </div>
+
+          <form id="form" autocomplete="off">
+            <label for="name">Your name</label>
+            <input id="name" maxlength="24" placeholder="General" autocomplete="off">
+
+            <div id="codeRow">
+              <label for="code">Room code</label>
+              <input id="code" maxlength="16" placeholder="paste the code your host shared"
+                     autocapitalize="off" autocomplete="off" spellcheck="false">
+            </div>
+
+            <label for="pass">Party password</label>
+            <input id="pass" type="password" maxlength="128"
+                   placeholder="the shared secret" autocomplete="new-password">
+
+            <button id="go" class="go" type="submit">Create Party</button>
+            <div id="err" class="err"></div>
+          </form>
+
+          <p class="note">A leaked game link is <b>useless without the password</b> —
+            the room only opens for people who prove they know it.</p>
+        </div>
+
+        <!-- created: show the code to share, then enter -->
+        <div id="createdPanel" class="created hidden">
+          <p class="lead" style="margin-bottom:6px">Party ready. Share the code and
+            password with your friends.</p>
+          <label style="text-align:center">Room code</label>
+          <div id="createdCode" class="code"></div>
+          <button id="copyCode" class="copy" type="button">copy code</button>
+          <p id="shareLink" class="share"></p>
+          <button id="enter" class="go" type="button">Enter Battle →</button>
+          <a href="#" id="startOver" class="back">← create a different party</a>
+        </div>
+
+      </div>
+    </div>
+    <div style="text-align:center"><a href="/" class="back">← back to Igroteka</a></div>
+  </div>
+
+  <script src="party.js"></script>
+</body>
+</html>

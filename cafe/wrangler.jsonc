@@ -4,9 +4,15 @@
   "main": "src/worker.js",
   "compatibility_date": "2026-05-07",
   "durable_objects": {
-    "bindings": [{ "name": "LOBBY", "class_name": "LobbyRoom" }]
+    "bindings": [
+      { "name": "LOBBY", "class_name": "LobbyRoom" },
+      { "name": "THROTTLE", "class_name": "Throttle" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["LobbyRoom"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["LobbyRoom"] },
+    { "tag": "v2", "new_sqlite_classes": ["Throttle"] }
+  ],
   "observability": { "enabled": true },
   "routes": [{ "pattern": "cafe-nw.mrz.sh", "custom_domain": true }]
 

@@ -168,6 +168,7 @@
       <div id="smLeft">
         <div class="item" data-open="setup" id="smSetup"><img class="ig" src="icons/cd.png">Install C&amp;C Generals: Zero Hour</div>
         <div class="item" data-open="zh" style="display:none" id="smPlay"><img class="ig game-ico" src="icons/games.png">C&amp;C Generals: Zero Hour</div>
+        <div class="item" data-open="party" style="display:none" id="smParty"><img class="ig" src="icons/games.png">Multiplayer Party…</div>
         <div class="smSep"></div>
         <div class="item" data-open="uninstall" style="display:none" id="smUninstall"><img class="ig" src="icons/trash.png">Uninstall Zero Hour</div>
         <div class="spacer"></div>
@@ -510,7 +511,10 @@ async function openUninstall() {
     localStorage.removeItem('zh-installed');
     const icon = document.getElementById('zhIcon');
     if (icon) icon.remove();
+    const picon = document.getElementById('partyIcon');
+    if (picon) picon.remove();
     document.getElementById('smPlay').style.display = 'none';
+    document.getElementById('smParty').style.display = 'none';
     document.getElementById('smUninstall').style.display = 'none';
     document.getElementById('setupIcon').style.display = '';
     document.getElementById('smSetup').style.display = '';
@@ -531,6 +535,7 @@ async function placeGameIcon() {
   document.getElementById('setupIcon').style.display = 'none';
   document.getElementById('smSetup').style.display = 'none';
   document.getElementById('smPlay').style.display = '';
+  document.getElementById('smParty').style.display = '';   // multiplayer unlocked once installed
   document.getElementById('smUninstall').style.display = '';
   const old = document.getElementById('zhIcon');
   if (old) old.remove();
@@ -541,6 +546,12 @@ async function placeGameIcon() {
   if (url) document.querySelectorAll('img.game-ico').forEach(i => { i.src = url; });
   const el = addIcon('zh', glyph, 'C&C Generals Zero Hour', 24, 24, () => location.href = 'play/zh/');
   el.id = 'zhIcon';
+  // Multiplayer party icon — only exists once a game is installed, since you
+  // can't join a match without the game files (the party page double-checks).
+  const oldP = document.getElementById('partyIcon');
+  if (oldP) oldP.remove();
+  const ep = addIcon('party', '<img src="icons/games.png" alt="">', 'Multiplayer Party', 24, 236, () => location.href = 'party/');
+  ep.id = 'partyIcon';
 }
 if (localStorage.getItem('zh-installed')) placeGameIcon();
 
@@ -628,6 +639,7 @@ startMenu.addEventListener('click', (e) => {
   if (item.dataset.open === 'setup') openSetup();
   if (item.dataset.open === 'about') openAbout();
   if (item.dataset.open === 'zh') location.href = 'play/zh/';
+  if (item.dataset.open === 'party') location.href = 'party/';
   if (item.dataset.open === 'uninstall') openUninstall();
 });
 

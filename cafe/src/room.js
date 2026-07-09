@@ -7,19 +7,99 @@
 //
 // It never sees SDP contents — it forwards opaque `data` blobs by target id.
 // It never touches game traffic. It is deliberately dumb (see CLAUDE.md).
+//
+// Two kinds of room:
+//  - OPEN (no stored party): anyone with the code joins, first-in is host. This
+//    is the dev / casual LAN flow (e.g. room "lan", two browser tabs).
+//  - PROTECTED (createParty was called => a verifier+secret live in ctx.storage):
+//    the WS upgrade REQUIRES a valid signed token; host role comes from the
+//    token, not connection order. This is the password-gated private party — a
+//    leaked game URL carries no token, so the DO rejects it.
 
 import { DurableObject } from "cloudflare:workers";
 import { getIceServers } from "./turn.js";
+import {
+  b64uEncode, b64uDecode, randomBytes, deriveVerifier, constantTimeEqual,
+  DEFAULT_ITERS, mintToken, verifyToken,
+} from "./auth.js";
 
 const MAX_PLAYERS = 8; // ZH tops out at 8; 1v1 is the v1.0 target.
 const MAX_NAME = 24;
 const MAX_CHAT = 500;
+const TOKEN_TTL_SEC = 1800; // 30 min: outlives a human-paced gather + the
+                            // post-launch WS reconnect. Reused from localStorage
+                            // for in-session reconnects.
+const AUTH_MAX_FAILS = 5;   // wrong-password attempts per IP before a lockout
+const AUTH_LOCKOUT_MS = 60_000;
 
 export class LobbyRoom extends DurableObject {
-  // WebSocket upgrade. The Worker forwards the client Request here.
+  // ---- RPC: create a password-protected party (called by the Worker /party) ----
+  // `code` is the server-generated room code this DO is addressed by. Stores the
+  // PBKDF2 verifier + a per-room HMAC secret, binds the creator as host, and
+  // returns a signed host token. 409 if a party already lives here (never clobber
+  // a live party — protects against a code collision).
+  async createParty(code, password) {
+    if (await this.ctx.storage.get("party"))
+      return { error: "party already exists", status: 409 };
+    const salt = randomBytes(16);
+    const verifier = await deriveVerifier(password, salt, DEFAULT_ITERS);
+    const secret = randomBytes(32);
+    await this.ctx.storage.put("party", {
+      code,
+      salt: b64uEncode(salt),
+      iters: DEFAULT_ITERS,
+      verifier: b64uEncode(verifier),
+      createdAt: Date.now(),
+    });
+    await this.ctx.storage.put("secret", b64uEncode(secret));
+    const token = await mintToken(secret, { room: code, role: "host", ttlSec: TOKEN_TTL_SEC });
+    return { token, role: "host" };
+  }
+
+  // ---- RPC: authenticate into an existing party (called by the Worker /auth) ----
+  // Verifies the password against the stored verifier, rate-limits wrong guesses
+  // per IP, and issues a signed guest token on success.
+  async authenticate(code, password, ip) {
+    const party = await this.ctx.storage.get("party");
+    if (!party) return { error: "no such party", status: 404 };
+
+    const rlKey = "af:" + ip;
+    const now = Date.now();
+    const rl = (await this.ctx.storage.get(rlKey)) || { n: 0, until: 0 };
+    if (rl.until > now)
+      return { error: "too many attempts — wait a minute", status: 429 };
+
+    const verifier = await deriveVerifier(password, b64uDecode(party.salt), party.iters);
+    if (!constantTimeEqual(verifier, b64uDecode(party.verifier))) {
+      rl.n += 1;
+      if (rl.n >= AUTH_MAX_FAILS) { rl.until = now + AUTH_LOCKOUT_MS; rl.n = 0; }
+      await this.ctx.storage.put(rlKey, rl);
+      return { error: "wrong password", status: 403 };
+    }
+    await this.ctx.storage.delete(rlKey); // reset the counter on success
+
+    const secret = b64uDecode(await this.ctx.storage.get("secret"));
+    const token = await mintToken(secret, { room: party.code, role: "guest", ttlSec: TOKEN_TTL_SEC });
+    return { token, role: "guest" };
+  }
+
+  // ---- WebSocket upgrade (the Worker forwards the client Request here) ----
   async fetch(request) {
     const url = new URL(request.url);
     const name = (url.searchParams.get("name") || "player").slice(0, MAX_NAME);
+
+    // Protected room? Then the token is the gate. This is the enforcement point:
+    // no valid token => no socket => a leaked URL can't join.
+    const party = await this.ctx.storage.get("party");
+    let tokenRole = null;
+    if (party) {
+      const token = url.searchParams.get("token") || "";
+      const secretB64 = await this.ctx.storage.get("secret");
+      const claims = secretB64 ? await verifyToken(token, b64uDecode(secretB64)) : null;
+      if (!claims || claims.r !== party.code)
+        return new Response("unauthorized", { status: 401 });
+      tokenRole = claims.role;
+    }
 
     if (this.ctx.getWebSockets().length >= MAX_PLAYERS)
       return new Response("room full", { status: 403 });
@@ -27,7 +107,11 @@ export class LobbyRoom extends DurableObject {
     const [client, server] = Object.values(new WebSocketPair());
 
     const id = crypto.randomUUID().slice(0, 8);
-    const host = this.ctx.getWebSockets().length === 0; // first in = host
+    // Host: from the token role in a protected room (authoritative, survives the
+    // reconnect-reshuffle when everyone launches at once); first-in for an open
+    // room. In a protected room this is the single source of truth the engine's
+    // hostIP() lookup depends on.
+    const host = party ? tokenRole === "host" : this.ctx.getWebSockets().length === 0;
 
     // Stable per-connection slot (1-based, lowest free). The engine derives its
     // synthetic IP 10.0.0.<slot> from this. Server-assigned + stable (not a client
@@ -115,19 +199,25 @@ export class LobbyRoom extends DurableObject {
     this.onGone(ws);
   }
 
-  onGone(ws) {
+  async onGone(ws) {
     try {
       ws.close();
     } catch {}
     // getWebSockets() still includes the closing socket during this handler, so
     // exclude it everywhere: host promotion AND the roster we broadcast.
     const remaining = this.ctx.getWebSockets().filter((s) => s !== ws);
-    const stillHosted = remaining.some((s) => (s.deserializeAttachment() || {}).host);
-    if (!stillHosted && remaining.length) {
-      const s = remaining[0];
-      const a = s.deserializeAttachment();
-      a.host = true;
-      s.serializeAttachment(a);
+    // Promote a new host ONLY in open rooms. In a protected room the host role is
+    // token-bound — auto-promoting a guest would make the roster say "host" for a
+    // peer whose engine launched as a joiner, misrouting everyone's hostIP().
+    const party = await this.ctx.storage.get("party");
+    if (!party) {
+      const stillHosted = remaining.some((s) => (s.deserializeAttachment() || {}).host);
+      if (!stillHosted && remaining.length) {
+        const s = remaining[0];
+        const a = s.deserializeAttachment();
+        a.host = true;
+        s.serializeAttachment(a);
+      }
     }
     this.broadcastRoster(ws);
   }
