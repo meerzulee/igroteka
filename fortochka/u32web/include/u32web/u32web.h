@@ -20,4 +20,9 @@ void install(runtime::Machine& m);
 void post_message(uint32_t hwnd, uint32_t message, uint32_t wparam,
                   uint32_t lparam);
 
+// Client-area framebuffer the guest painted into (ARGB 0xFFRRGGBB, row-major,
+// width*height). Returns nullptr if no window was created. The shell (zhrun PPM
+// dump / zhweb canvas blit) reads this after the pump processes WM_PAINT.
+const uint32_t* framebuffer(uint32_t& width, uint32_t& height);
+
 } // namespace u32web

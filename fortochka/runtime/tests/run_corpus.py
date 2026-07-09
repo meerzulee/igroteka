@@ -24,6 +24,7 @@ CASES = [
     ("seh_chain.exe", "zhrun", [], 42, None),    # chain walk: inner+outer ran
     ("seh_noncont.exe", "zhrun", [], 1, "noncontinuable"),  # rejected, not resumed
     ("fpu.exe", "zhrun", [], 42, None),          # real x87 float math end-to-end
+    ("paint.exe", "window_test", ["--paint"], 0, "guest GDI reached"),  # WM_PAINT→fb
 ]
 
 

@@ -1,7 +1,9 @@
 #include "u32web/u32web.h"
 
+#include <cstdint>
 #include <deque>
 #include <string>
+#include <vector>
 
 namespace u32web {
 
@@ -19,13 +21,26 @@ struct Msg {
 };
 
 constexpr uint32_t kFakeHwnd = 0x00010001; // one window; a nonzero HWND token.
+constexpr uint32_t kFakeHdc = 0x0DC00001;  // one device context token.
+constexpr uint32_t kBrushTag = 0xB0000000; // solid-brush handle: tag | RGB.
 
-// Single-window state. One process, one message queue — enough for the pump
-// round-trip and for RTW's single top-level window later.
+// COLORREF (0x00BBGGRR) → framebuffer ARGB (0xFFRRGGBB), opaque.
+inline uint32_t colorref_to_argb(uint32_t c) {
+    uint32_t r = c & 0xFF, g = (c >> 8) & 0xFF, b = (c >> 16) & 0xFF;
+    return 0xFF000000u | (r << 16) | (g << 8) | b;
+}
+
+// Single-window state. One process, one message queue, one client framebuffer —
+// enough for the pump round-trip and RTW's single top-level window later.
 struct State {
     uint32_t wndproc = 0; // guest VA of the registered WNDPROC
     std::deque<Msg> queue;
     bool class_registered = false;
+    uint32_t width = 640, height = 480;   // client area
+    std::vector<uint32_t> fb;             // ARGB pixels, width*height
+    void ensure_fb() {
+        if (fb.size() != (size_t)width * height) fb.assign((size_t)width * height, 0xFF000000u);
+    }
 };
 State g_state; // one guest process per Machine in tier 0; a global is fine here.
 
@@ -46,13 +61,44 @@ void post_message(uint32_t hwnd, uint32_t message, uint32_t wparam,
     g_state.queue.push_back({hwnd, message, wparam, lparam});
 }
 
+const uint32_t* framebuffer(uint32_t& width, uint32_t& height) {
+    if (g_state.fb.empty()) return nullptr;
+    width = g_state.width;
+    height = g_state.height;
+    return g_state.fb.data();
+}
+
 void install(Machine& m) {
     g_state = State{};
 
     m.add_handler([](Machine& m, const std::string& dll,
                      const std::string& name) -> bool {
-        if (dll != "user32.dll") return false;
+        if (dll != "user32.dll" && dll != "gdi32.dll") return false;
         State& s = g_state;
+
+        // ---- gdi32: minimal painting into the client framebuffer ----
+        if (name == "CreateSolidBrush") { // COLORREF → tagged brush handle
+            m.ret(1, kBrushTag | (m.arg(0) & 0x00FFFFFF));
+            return true;
+        }
+        if (name == "SetPixel") { // hdc, x, y, COLORREF
+            uint32_t x = m.arg(1), y = m.arg(2);
+            s.ensure_fb();
+            if (x < s.width && y < s.height)
+                s.fb[(size_t)y * s.width + x] = colorref_to_argb(m.arg(3));
+            m.ret(4, m.arg(3));
+            return true;
+        }
+        if (name == "GetStockObject") { // return a tagged white/black/etc brush
+            uint32_t idx = m.arg(0); // 0 WHITE_BRUSH..4 BLACK_BRUSH (rough)
+            uint32_t rgb = idx == 4 ? 0x000000 : 0xFFFFFF;
+            m.ret(1, kBrushTag | rgb);
+            return true;
+        }
+        if (name == "DeleteObject" || name == "SelectObject") {
+            m.ret(name == "SelectObject" ? 2 : 1, 0);
+            return true;
+        }
 
         if (name == "RegisterClassA" || name == "RegisterClassExA") {
             // WNDCLASS(A): lpfnWndProc is the 2nd field (offset 4); WNDCLASSEX
@@ -65,10 +111,61 @@ void install(Machine& m) {
             return true;
         }
         if (name == "CreateWindowExA" || name == "CreateWindowA") {
-            // Return our single HWND. A real event source would start here;
-            // the harness seeds the queue via post_message before run.
-            unsigned nargs = name == "CreateWindowExA" ? 12 : 11;
-            m.ret(nargs, kFakeHwnd);
+            // args: ...,style,x,y,w,h,... — width/height at indices depending on
+            // the ExA prefix (ExA has dwExStyle first). Capture the client size
+            // for the framebuffer; ignore CW_USEDEFAULT (0x80000000) and 0.
+            bool ex = name == "CreateWindowExA";
+            uint32_t w = m.arg(ex ? 6 : 5), h = m.arg(ex ? 7 : 6);
+            if (w && w != 0x80000000u && w < 8192) s.width = w;
+            if (h && h != 0x80000000u && h < 8192) s.height = h;
+            s.ensure_fb();
+            m.ret(ex ? 12 : 11, kFakeHwnd);
+            return true;
+        }
+        if (name == "GetClientRect") { // hwnd, RECT* {left,top,right,bottom}
+            uint32_t r = m.arg(1);
+            m.write32(r + 0, 0);
+            m.write32(r + 4, 0);
+            m.write32(r + 8, s.width);
+            m.write32(r + 12, s.height);
+            m.ret(2, 1);
+            return true;
+        }
+        if (name == "GetDC" || name == "BeginPaint") {
+            // BeginPaint(hwnd, PAINTSTRUCT*) fills ps: hdc(+0), fErase(+4),
+            // rcPaint(+8..24). Both return an HDC.
+            if (name == "BeginPaint") {
+                uint32_t ps = m.arg(1);
+                m.write32(ps + 0, kFakeHdc);
+                m.write32(ps + 4, 0);
+                m.write32(ps + 8, 0);
+                m.write32(ps + 12, 0);
+                m.write32(ps + 16, s.width);
+                m.write32(ps + 20, s.height);
+            }
+            s.ensure_fb();
+            m.ret(name == "BeginPaint" ? 2 : 1, kFakeHdc);
+            return true;
+        }
+        if (name == "EndPaint" || name == "ReleaseDC") {
+            m.ret(name == "ReleaseDC" ? 2 : 2, 1);
+            return true;
+        }
+        if (name == "FillRect") { // hdc, RECT*, HBRUSH
+            uint32_t r = m.arg(1);
+            int32_t l = (int32_t)m.read32(r + 0), t = (int32_t)m.read32(r + 4),
+                    ri = (int32_t)m.read32(r + 8), bo = (int32_t)m.read32(r + 12);
+            uint32_t argb = colorref_to_argb(m.arg(2) & 0x00FFFFFF);
+            s.ensure_fb();
+            for (int32_t y = t; y < bo && y < (int32_t)s.height; y++)
+                for (int32_t x = l; x < ri && x < (int32_t)s.width; x++)
+                    if (x >= 0 && y >= 0) s.fb[(size_t)y * s.width + x] = argb;
+            m.ret(3, 1);
+            return true;
+        }
+        if (name == "InvalidateRect" || name == "ValidateRect" ||
+            name == "UpdateWindow") {
+            m.ret(name == "InvalidateRect" ? 3 : name == "ValidateRect" ? 2 : 1, 1);
             return true;
         }
         if (name == "DefWindowProcA") {

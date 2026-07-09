@@ -62,20 +62,64 @@ static int run_recurse_guard(std::vector<uint8_t>& exe) {
     return 1;
 }
 
+constexpr uint32_t WM_PAINT = 0x000F;
+
+// paint mode: seed WM_PAINT, run, then dump the client framebuffer as a binary
+// PPM (P6) so the pixels the guest drew can be inspected/screenshotted.
+static int run_paint(std::vector<uint8_t>& exe, const char* ppm_out) {
+    Machine m(64u << 20);
+    m.load(exe.data(), exe.size());
+    k32web::install(m);
+    u32web::install(m);
+    u32web::post_message(HWND_TOKEN, WM_PAINT, 0, 0);
+    m.run_entry();
+
+    uint32_t w = 0, h = 0;
+    const uint32_t* fb = u32web::framebuffer(w, h);
+    if (!fb) {
+        fprintf(stderr, "FAIL: no framebuffer (window never created)\n");
+        return 1;
+    }
+    if (ppm_out) {
+        FILE* f = fopen(ppm_out, "wb");
+        fprintf(f, "P6\n%u %u\n255\n", w, h);
+        for (uint32_t i = 0; i < w * h; i++) {
+            uint32_t p = fb[i];
+            uint8_t rgb[3] = {(uint8_t)(p >> 16), (uint8_t)(p >> 8), (uint8_t)p};
+            fwrite(rgb, 1, 3, f);
+        }
+        fclose(f);
+    }
+    // Spot-check a couple of gradient pixels: (40,40)=RGB(0,0,128) blue,
+    // (40+255,40+127)=RGB(255,254,128).
+    uint32_t p0 = fb[40u * w + 40], p1 = fb[(40u + 127) * w + (40 + 255)];
+    printf("fb %ux%u  px(40,40)=%06x px(295,167)=%06x\n", w, h, p0 & 0xFFFFFF,
+           p1 & 0xFFFFFF);
+    bool ok = (p0 & 0xFFFFFF) == 0x000080 && (p1 & 0xFFFFFF) == 0xFFFE80;
+    printf("%s paint.exe — guest GDI reached the framebuffer\n",
+           ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 int main(int argc, char** argv) {
     bool recurse = false;
+    const char* paint_out = nullptr;
+    bool paint = false;
     const char* path = nullptr;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--recurse-guard")) recurse = true;
+        else if (!strcmp(argv[i], "--paint")) paint = true;
+        else if (!strcmp(argv[i], "--ppm") && i + 1 < argc) paint_out = argv[++i];
         else path = argv[i];
     }
     if (!path) {
-        fprintf(stderr, "usage: window_test [--recurse-guard] window.exe\n");
+        fprintf(stderr, "usage: window_test [--recurse-guard|--paint [--ppm F]] exe\n");
         return 2;
     }
     std::vector<uint8_t> exe = slurp(path);
 
     if (recurse) return run_recurse_guard(exe);
+    if (paint) return run_paint(exe, paint_out);
 
     Machine m(64u << 20);
     try {

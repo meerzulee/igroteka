@@ -45,9 +45,13 @@
     <label class="file">Choose a .exe<input type="file" id="file" accept=".exe" /></label>
     <button id="run" disabled>Run</button>
     <button id="demo">Run bundled hello.exe</button>
+    <button id="paint">Run bundled paint.exe</button>
     <span class="dim" id="picked"></span>
   </div>
   <div id="term"><span class="dim">Runtime loading…</span></div>
+  <canvas id="screen" width="640" height="480"
+          style="display:none; margin-top:12px; border:1px solid #1c242e;
+                 border-radius:8px; image-rendering:pixelated; max-width:100%"></canvas>
 </main>
 
 <script>
@@ -89,6 +93,30 @@
     line('');
     line(code >= 0 ? `process exited, code ${code}` : `runtime error (${code})`,
          code >= 0 ? 'ok' : 'err');
+    blitFramebuffer();
+  }
+
+  // If the guest painted a client area, blit it to the canvas (ARGB → RGBA).
+  function blitFramebuffer() {
+    const w = Module._zhweb_fb_width(), h = Module._zhweb_fb_height();
+    const ptr = Module._zhweb_fb_ptr();
+    const canvas = document.getElementById('screen');
+    if (!ptr || !w || !h) { canvas.style.display = 'none'; return; }
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    const img = ctx.createImageData(w, h);
+    const heap = Module.HEAPU32;
+    const base = ptr >>> 2;
+    for (let i = 0; i < w * h; i++) {
+      const px = heap[base + i];
+      img.data[i * 4]     = (px >>> 16) & 0xff; // R
+      img.data[i * 4 + 1] = (px >>> 8) & 0xff;  // G
+      img.data[i * 4 + 2] = px & 0xff;          // B
+      img.data[i * 4 + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    canvas.style.display = 'block';
+    line(`painted ${w}x${h} client area → canvas`, 'ok');
   }
 
   document.getElementById('file').addEventListener('change', async (e) => {
@@ -104,6 +132,10 @@
   document.getElementById('demo').addEventListener('click', async () => {
     const r = await fetch('hello.exe');
     runExe(new Uint8Array(await r.arrayBuffer()), 'hello.exe');
+  });
+  document.getElementById('paint').addEventListener('click', async () => {
+    const r = await fetch('paint.exe');
+    runExe(new Uint8Array(await r.arrayBuffer()), 'paint.exe');
   });
 </script>
 <!-- Emscripten glue loads last, after window.Module is defined. -->

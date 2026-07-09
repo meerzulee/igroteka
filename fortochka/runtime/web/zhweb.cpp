@@ -13,6 +13,11 @@
 
 using runtime::Machine;
 
+namespace {
+uint32_t g_fb_w = 0, g_fb_h = 0;
+const uint32_t* g_fb = nullptr;
+} // namespace
+
 extern "C" {
 
 // Run a PE32 image. Returns the process exit code, or a negative error:
@@ -20,6 +25,8 @@ extern "C" {
 EMSCRIPTEN_KEEPALIVE
 int zhweb_run(const uint8_t* file, int len, int arena_mb) {
     if (arena_mb <= 0) arena_mb = 64;
+    g_fb = nullptr;
+    g_fb_w = g_fb_h = 0;
     Machine m((uint32_t)arena_mb << 20);
     try {
         const auto& img = m.load(file, (size_t)len);
@@ -32,16 +39,26 @@ int zhweb_run(const uint8_t* file, int len, int arena_mb) {
 
     k32web::install(m);
     u32web::install(m);
+    // Seed one WM_PAINT so a windowed exe paints once; a console exe never pumps
+    // and leaves it unconsumed.
+    u32web::post_message(0x00010001, 0x000F /*WM_PAINT*/, 0, 0);
 
+    int code;
     try {
-        int code = m.run_entry();
+        code = m.run_entry();
         printf("zhweb: exit=%d icount=%llu\n", code,
                (unsigned long long)m.cpu().icount);
-        return code;
     } catch (const runtime::MachineError& e) {
         printf("zhweb: %s\n", e.what.c_str());
-        return -2;
+        code = -2;
     }
+    g_fb = u32web::framebuffer(g_fb_w, g_fb_h); // null if no window was created
+    return code;
 }
+
+// Framebuffer accessors for the page's canvas blit (ARGB 0xFFRRGGBB, row-major).
+EMSCRIPTEN_KEEPALIVE int zhweb_fb_width() { return (int)g_fb_w; }
+EMSCRIPTEN_KEEPALIVE int zhweb_fb_height() { return (int)g_fb_h; }
+EMSCRIPTEN_KEEPALIVE const uint32_t* zhweb_fb_ptr() { return g_fb; }
 
 } // extern "C"
