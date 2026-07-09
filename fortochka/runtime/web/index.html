@@ -48,6 +48,8 @@
     <button id="paint">Run bundled paint.exe</button>
     <button id="d3d">Run bundled d3dclear.exe</button>
     <button id="tri">Run bundled tri.exe</button>
+    <button id="fftri">Run bundled fftri.exe</button>
+    <button id="tex">Run bundled tex.exe</button>
     <span class="dim" id="picked"></span>
   </div>
   <div id="term"><span class="dim">Runtime loading…</span></div>
@@ -146,6 +148,14 @@
   document.getElementById('tri').addEventListener('click', async () => {
     const r = await fetch('tri.exe');
     runExe(new Uint8Array(await r.arrayBuffer()), 'tri.exe');
+  });
+  document.getElementById('fftri').addEventListener('click', async () => {
+    const r = await fetch('fftri.exe');
+    runExe(new Uint8Array(await r.arrayBuffer()), 'fftri.exe');
+  });
+  document.getElementById('tex').addEventListener('click', async () => {
+    const r = await fetch('tex.exe');
+    runExe(new Uint8Array(await r.arrayBuffer()), 'tex.exe');
   });
 </script>
 <!-- Emscripten glue loads last, after window.Module is defined. -->
