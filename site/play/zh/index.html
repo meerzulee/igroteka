@@ -86,14 +86,6 @@
        screen — the branded art only appears for an actual boot. */
     #loader.bare { background:#000; }
     #loader.bare .center, #loader.bare .frame, #loader.bare #tip { display:none; }
-    /* XP crash dialog — shown over the canvas like a real game crash */
-    #crash { display:none; position:fixed; inset:0; z-index:10;
-             align-items:center; justify-content:center; }
-    #crash .window { width:420px; box-shadow:4px 4px 16px rgba(0,0,0,.55); }
-    #crash .body { display:flex; gap:14px; padding:16px 14px;
-             align-items:flex-start; background:#fff; font-size:12px;
-             line-height:1.5; color:#000; letter-spacing:.5px; }
-    #crash .btns { display:flex; justify-content:center; gap:8px; padding:10px; }
     #tip { position:absolute; bottom:52px; left:0; right:0; text-align:center;
       color:#7d93b2; font-size:13px; font-style:italic; padding:0 40px; }
     #tip b { color:#c98b3b; font-style:normal; letter-spacing:1px; }
@@ -137,23 +129,7 @@
       </div>
     </div>
   </div>
-  <div id="crash">
-    <div class="window">
-      <div class="title-bar">
-        <div class="title-bar-text">C&amp;C Generals: Zero Hour</div>
-        <div class="title-bar-controls"><button aria-label="Close" id="crashX"></button></div>
-      </div>
-      <div class="body">
-        <svg width="32" height="32" viewBox="0 0 32 32" style="flex:0 0 32px" aria-hidden="true">
-          <circle cx="16" cy="16" r="15" fill="#d83a2e"/>
-          <path d="M10 10 L22 22 M22 10 L10 22" stroke="#fff" stroke-width="4" stroke-linecap="round"/>
-        </svg>
-        <div id="crashMsg"></div>
-      </div>
-      <div class="btns" id="crashBtns"></div>
-    </div>
-  </div>
-
+<script src="../../xp-dialog.js"></script>
 <script>
   // ── Multiplayer wiring (private party) ──────────────────────────────────
   // A ?room= launch is a password-gated party. The signed lobby token was put
@@ -290,19 +266,19 @@ new MutationObserver(fitCanvas).observe(document.getElementById('canvas'),
   { attributes: true, attributeFilter: ['width', 'height'] });
 
 // XP crash dialog over the canvas — like a real game crash on the desktop.
+// Shared component (xp-dialog.js); id 'crash' so repeated failures replace the
+// box instead of stacking.
 function showCrashDialog(html, opts = {}) {
-  document.getElementById('crashMsg').innerHTML = html;
-  const btns = document.getElementById('crashBtns');
-  btns.innerHTML = '';
-  const add = (label, fn) => {
-    const b = document.createElement('button');
-    b.textContent = label; b.onclick = fn; btns.appendChild(b);
-  };
-  if (opts.setup) add('Run Setup', () => location.href = '../../?run=setup');
-  if (opts.reload) add('Reload', () => location.reload());
-  add('Close', () => location.href = '../../');
-  document.getElementById('crashX').onclick = () => location.href = '../../';
-  document.getElementById('crash').style.display = 'flex';
+  const buttons = [];
+  if (opts.setup) buttons.push({ label: 'Run Setup', onclick: () => { location.href = '../../?run=setup'; } });
+  if (opts.reload) buttons.push({ label: 'Reload', onclick: () => location.reload() });
+  buttons.push({ label: 'Close', onclick: () => { location.href = '../../'; } });
+  XpDialog.error(html, {
+    title: 'C&C Generals: Zero Hour',
+    id: 'crash',
+    buttons,
+    onClose: () => { location.href = '../../'; },
+  });
 }
 
 // The game's own gold loading bar, sliced live from the user's EnglishZH.big.

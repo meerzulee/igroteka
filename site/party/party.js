@@ -34,14 +34,24 @@
   // Multiplayer requires the game installed on this device — you can't join a
   // match without the files. The Igroteka desktop only surfaces this page once
   // installed, but a shared /party link could land an uninstalled visitor here,
-  // so gate again. (The game launch also re-checks OPFS and bounces to Setup.)
+  // so gate again with a native XP warning box. (The game launch also re-checks
+  // OPFS and bounces to Setup.)
   if (!localStorage.getItem("zh-installed")) {
-    el.forms.innerHTML =
-      '<p class="lead">You need <b style="color:#e8b34b">Command &amp; Conquer: ' +
-      'Zero Hour</b> installed on this device before you can join a multiplayer ' +
-      'party.<br><br>Your game files stay on your device — Igroteka hosts nothing.</p>' +
-      '<button class="go" id="goInstall" type="button">Install the game →</button>';
-    document.getElementById("goInstall").onclick = function () { location.href = "/"; };
+    document.querySelector(".window").style.display = "none"; // hide the party form
+    XpDialog.warn(
+      "You need <b>C&amp;C Generals: Zero Hour</b> installed on this device " +
+      "before you can join a multiplayer party.<br><br>" +
+      "Run <b>Setup — C&amp;C Generals: Zero Hour</b> to install it, then come " +
+      "back. Your game files stay on your device — Igroteka hosts nothing.",
+      {
+        title: "Multiplayer Party",
+        buttons: [
+          { label: "Run Setup", default: true, onclick: function () { location.href = "/?run=setup"; } },
+          { label: "Close", onclick: function () { location.href = "/"; } },
+        ],
+        onClose: function () { location.href = "/"; },
+      }
+    );
     return; // don't wire the create/join forms
   }
 
@@ -67,10 +77,16 @@
   if (preCode) { el.code.value = preCode.trim(); setMode("join"); }
   else setMode("create");
 
+  // Inline red text for local field validation; native XP error box for
+  // server-reported failures (wrong password, rate limit, network down).
   function fail(msg) {
     el.err.textContent = msg;
     el.go.disabled = false;
     el.go.textContent = mode === "join" ? "Join Party" : "Create Party";
+  }
+  function failDialog(msg) {
+    fail("");
+    XpDialog.error(msg, { title: "Multiplayer Party", id: "party-err" });
   }
 
   async function post(path, body) {
@@ -114,19 +130,19 @@
     try {
       if (mode === "create") {
         var r = await post("/party", { password: pass });
-        if (!r.ok) return fail(r.data.error || "Could not create the party.");
+        if (!r.ok) return failDialog(r.data.error || "Could not create the party.");
         stash(r.data.roomCode, r.data.token, r.data.role);
         showCreated(r.data.roomCode);
       } else {
         var code = el.code.value.trim();
         if (!code) return fail("Enter the room code your host shared.");
         var a = await post("/room/" + encodeURIComponent(code) + "/auth", { password: pass });
-        if (!a.ok) return fail(a.data.error || "Could not join — check the code and password.");
+        if (!a.ok) return failDialog(a.data.error || "Could not join — check the code and password.");
         stash(a.data.roomCode, a.data.token, a.data.role);
         launch(a.data.roomCode); // guests launch straight in
       }
     } catch (err) {
-      fail("Network error — is the party server reachable?");
+      failDialog("Could not reach the party server. Check your connection and try again.");
     }
   };
 
