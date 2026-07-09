@@ -7,7 +7,8 @@ LDFLAGS := -nostdlib -Wl,--entry=_start -Wl,--subsystem,console \
            -Wl,--image-base=0x400000 -lkernel32 -luser32
 
 BIN := bin
-RUNGS := $(BIN)/hello.exe $(BIN)/window.exe $(BIN)/recurse.exe
+RUNGS := $(BIN)/hello.exe $(BIN)/window.exe $(BIN)/recurse.exe $(BIN)/seh.exe \
+         $(BIN)/seh_chain.exe
 
 all: $(RUNGS)
 

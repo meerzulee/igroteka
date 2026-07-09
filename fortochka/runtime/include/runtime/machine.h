@@ -59,6 +59,16 @@ class Machine {
     void write32(uint32_t va, uint32_t v);
     std::string read_cstr(uint32_t va, uint32_t max = 4096) const;
 
+    // TIB / SEH. tib_addr() is the guest linear address of the Thread
+    // Information Block; fs_base points here, so fs:[0] is the SEH chain head.
+    // The SEH dispatcher (k32web) borrows guest scratch above the TIB fields
+    // for the synthetic EXCEPTION_RECORD and CONTEXT it hands to guest
+    // handlers — laid out here so both sides agree.
+    uint32_t tib_addr() const;
+    static constexpr uint32_t TIB_SCRATCH_RECORD = 0x100; // EXCEPTION_RECORD
+    static constexpr uint32_t TIB_SCRATCH_CONTEXT = 0x200; // CONTEXT stub
+    static constexpr uint32_t SEH_CHAIN_END = 0xFFFFFFFFu;
+
     bool exited = false;
     uint32_t exit_code = 0;
 

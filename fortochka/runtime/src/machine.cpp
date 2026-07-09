@@ -11,7 +11,14 @@ constexpr uint32_t ENTRY_SLOT = 0;   // main() returns here → process exit
 constexpr uint32_t REENTRY_SLOT = 1; // reverse-thunk guest calls return here
 constexpr uint32_t FIRST_IMPORT_SLOT = 2;
 constexpr uint32_t STACK_TOP = 0x00380000; // below the 0x400000 image base
+// TIB sits in the gap between the stack region and the image base. fs:[0] (the
+// SEH chain head) is TIB offset 0; the SEH dispatcher borrows scratch above it
+// (see machine.h TIB_SCRATCH_*). Empty chain sentinel is 0xFFFFFFFF (MSVC).
+constexpr uint32_t TIB_ADDR = 0x00390000;
+constexpr uint32_t SEH_END = 0xFFFFFFFFu;
 } // namespace
+
+uint32_t Machine::tib_addr() const { return TIB_ADDR; }
 
 Machine::Machine(uint32_t arena_bytes) : arena_(arena_bytes, 0) {
     next_slot_ = FIRST_IMPORT_SLOT;
@@ -104,6 +111,15 @@ int Machine::run_entry(uint64_t step_budget) {
     cpu_.eip = image_.entry;
     cpu_.gpr[ESP] = STACK_TOP - 4;
     write32(cpu_.gpr[ESP], hostcall_addr(ENTRY_SLOT)); // main rets → process end
+
+    // Thread Information Block: fs:[0] = SEH chain head (empty), plus the few
+    // fields era CRTs read. reentry_depth_ resets with the fresh process.
+    reentry_depth_ = 0;
+    cpu_.fs_base = TIB_ADDR;
+    write32(TIB_ADDR + 0x00, SEH_END);    // ExceptionList: empty chain
+    write32(TIB_ADDR + 0x04, STACK_TOP);  // StackBase (high)
+    write32(TIB_ADDR + 0x08, 0x00010000); // StackLimit (low)
+    write32(TIB_ADDR + 0x18, TIB_ADDR);   // Self (TEB linear address)
 
     for (uint32_t cb : image_.tls_callbacks)
         call_guest(cb, {image_.base, 1 /*DLL_PROCESS_ATTACH*/, 0}, step_budget);
