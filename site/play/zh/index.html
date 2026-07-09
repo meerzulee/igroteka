@@ -131,6 +131,21 @@
     @keyframes mlpulse { from { opacity:.4; } to { opacity:1; } }
     #mlTip { font-size:12.5px; font-style:italic; color:#7d93b2; max-width:520px; padding:0 30px; }
     #mlTip b { color:#c98b3b; font-style:normal; }
+    /* ZH-style match card: map name + player roster (static content — set once
+       at show time; nothing here needs to animate during the block) */
+    #mlMap { font-size:15px; letter-spacing:3px; color:#e8b34b; text-transform:uppercase;
+      margin-top:-8px; }
+    #mlRoster { display:flex; flex-direction:column; gap:7px; min-width:340px;
+      max-width:520px; background:rgba(10,18,32,.55); border:1px solid rgba(90,140,210,.3);
+      border-radius:6px; padding:14px 18px; }
+    #mlRoster:empty { display:none; }
+    .mlrow { display:flex; align-items:center; gap:10px; font-size:14px; }
+    .mldot { width:11px; height:11px; border-radius:2px; flex:0 0 11px;
+      box-shadow:0 0 6px rgba(0,0,0,.5); }
+    .mlname { flex:1; text-align:left; color:#e6eefb; overflow:hidden;
+      white-space:nowrap; text-overflow:ellipsis; }
+    .mlname .ai { color:#7d93b2; font-style:italic; }
+    .mlfac { color:#8fa9c8; font-size:12.5px; letter-spacing:.5px; }
     #tip { position:absolute; bottom:52px; left:0; right:0; text-align:center;
       color:#7d93b2; font-size:13px; font-style:italic; padding:0 40px; }
     #tip b { color:#c98b3b; font-style:normal; letter-spacing:1px; }
@@ -174,6 +189,8 @@
       <div class="a">COMMAND &amp; CONQUER</div>
       <div class="b">GENERALS</div>
     </div>
+    <div id="mlMap"></div>
+    <div id="mlRoster"></div>
     <div id="mlRing"></div>
     <div id="mlMsg">Preparing the battlefield…</div>
     <div id="mlTip"></div>
@@ -637,10 +654,40 @@ window.Module = {
   // fully-synchronous map load (GameLogic.cpp m_startNewGame defer), which
   // gives the browser exactly one paint to show this overlay; its spinner
   // (transform) and pulse (opacity) are compositor-driven, so they keep
-  // animating while the wasm main thread is blocked. The tip is chosen here,
-  // at show time — DOM text can't change mid-block.
-  onMatchLoadBegin: () => {
+  // animating while the wasm main thread is blocked. All content (map name,
+  // roster, tip) is set HERE, at show time — DOM text can't change mid-block.
+  // payload (JSON from TheGameInfo): {map, players:[{name,faction,human,color}]}
+  onMatchLoadBegin: (payload) => {
     const m = document.getElementById('matchloader');
+    // "maps/alpine assault/alpine assault.map" -> "Alpine Assault"
+    const prettyMap = (p) => (p || '').split(/[\\/]/).pop().replace(/\.map$/i, '')
+      .replace(/\w+/g, (w) => w[0].toUpperCase() + w.slice(1));
+    // classic ZH multiplayer colors by slot color index
+    const COLORS = ['#d6a32b', '#c92b2b', '#2b63cf', '#2b8a3a',
+                    '#d97b2b', '#2bb5c9', '#7b3fc9', '#c92b8a'];
+    const mapEl = document.getElementById('mlMap');
+    const roster = document.getElementById('mlRoster');
+    mapEl.textContent = ''; roster.textContent = '';
+    try {
+      const info = JSON.parse(payload || '{}');
+      mapEl.textContent = prettyMap(info.map);
+      (info.players || []).forEach((p) => {
+        const row = document.createElement('div'); row.className = 'mlrow';
+        const dot = document.createElement('span'); dot.className = 'mldot';
+        dot.style.background = COLORS[p.color] || '#5a6a80';
+        const nm = document.createElement('span'); nm.className = 'mlname';
+        nm.textContent = p.name || 'Player';                 // untrusted — textContent
+        if (!p.human) {
+          const ai = document.createElement('span'); ai.className = 'ai';
+          ai.textContent = ' (AI)';
+          nm.appendChild(ai);
+        }
+        const fac = document.createElement('span'); fac.className = 'mlfac';
+        fac.textContent = p.faction || '';
+        row.appendChild(dot); row.appendChild(nm); row.appendChild(fac);
+        roster.appendChild(row);
+      });
+    } catch (e) { /* no payload — overlay still shows wordmark + spinner */ }
     document.getElementById('mlTip').innerHTML =
       '<b>TIP</b> &nbsp; ' + TIPS[Math.floor(Math.random() * TIPS.length)];
     m.style.opacity = '1';
@@ -690,7 +737,7 @@ window.Module = {
     addRunDependency('gamedata');
     (async () => {
       // Font is ours to host (Liberation Sans, SIL OFL)
-      const font = await fetch('./default.ttf?v=2').then(r => r.arrayBuffer());
+      const font = await fetch('./default.ttf?v=3').then(r => r.arrayBuffer());
       FS.writeFile('/fonts/default.ttf', new Uint8Array(font));
 
       // Audio staging split — see the DEST comment; lazy is debug-only.
