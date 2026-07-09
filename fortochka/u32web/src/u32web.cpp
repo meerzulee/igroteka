@@ -56,8 +56,13 @@ void write_msg(Machine& m, uint32_t buf, const Msg& msg) {
 
 } // namespace
 
+// Windows caps a thread's message queue (~10k); bound ours so a guest that
+// PostMessages without pumping can't grow the host deque without limit.
+constexpr size_t kQueueMax = 65536;
+
 void post_message(uint32_t hwnd, uint32_t message, uint32_t wparam,
                   uint32_t lparam) {
+    if (g_state.queue.size() >= kQueueMax) return; // drop when full
     g_state.queue.push_back({hwnd, message, wparam, lparam});
 }
 
@@ -116,8 +121,10 @@ void install(Machine& m) {
             // for the framebuffer; ignore CW_USEDEFAULT (0x80000000) and 0.
             bool ex = name == "CreateWindowExA";
             uint32_t w = m.arg(ex ? 6 : 5), h = m.arg(ex ? 7 : 6);
-            if (w && w != 0x80000000u && w < 8192) s.width = w;
-            if (h && h != 0x80000000u && h < 8192) s.height = h;
+            // Cap dims (≤4096 covers any era resolution) so a guest can't force
+            // a >256 MB framebuffer allocation. CW_USEDEFAULT / 0 keep default.
+            if (w && w != 0x80000000u && w <= 4096) s.width = w;
+            if (h && h != 0x80000000u && h <= 4096) s.height = h;
             s.ensure_fb();
             m.ret(ex ? 12 : 11, kFakeHwnd);
             return true;
@@ -157,9 +164,15 @@ void install(Machine& m) {
                     ri = (int32_t)m.read32(r + 8), bo = (int32_t)m.read32(r + 12);
             uint32_t argb = colorref_to_argb(m.arg(2) & 0x00FFFFFF);
             s.ensure_fb();
-            for (int32_t y = t; y < bo && y < (int32_t)s.height; y++)
-                for (int32_t x = l; x < ri && x < (int32_t)s.width; x++)
-                    if (x >= 0 && y >= 0) s.fb[(size_t)y * s.width + x] = argb;
+            // Clamp the rect to the framebuffer BEFORE iterating — a negative
+            // origin must not turn the fill into a multi-billion-iteration loop.
+            if (l < 0) l = 0;
+            if (t < 0) t = 0;
+            if (ri > (int32_t)s.width) ri = (int32_t)s.width;
+            if (bo > (int32_t)s.height) bo = (int32_t)s.height;
+            for (int32_t y = t; y < bo; y++)
+                for (int32_t x = l; x < ri; x++)
+                    s.fb[(size_t)y * s.width + x] = argb;
             m.ret(3, 1);
             return true;
         }
@@ -234,8 +247,9 @@ void install(Machine& m) {
             return true;
         }
         if (name == "PostMessageA") {
-            post_message(m.arg(0), m.arg(1), m.arg(2), m.arg(3));
-            m.ret(4, 1);
+            bool full = s.queue.size() >= kQueueMax;
+            if (!full) post_message(m.arg(0), m.arg(1), m.arg(2), m.arg(3));
+            m.ret(4, full ? 0 : 1); // Windows: FALSE when the queue is full
             return true;
         }
         if (name == "SendMessageA") {
