@@ -58,7 +58,10 @@
     /* Embedded inside a desktop program window (?embed=1): the host window
        supplies the chrome, so drop ours — no backdrop, wordmark, title bar or
        page footer. Just the beige app surface. */
-    body.embed { background:#ece9d8; padding:0; align-items:stretch; }
+    body.embed { background:#ece9d8; padding:0; align-items:stretch;
+                 height:auto; min-height:0; } /* content-sized so the host
+                 window can fit the iframe to it (100% would echo the iframe
+                 height back and never shrink) */
     body.embed .wrap { max-width:none; }
     body.embed #wm, body.embed .title-bar, body.embed .backrow.pagefoot { display:none; }
     body.embed .window { box-shadow:none; }

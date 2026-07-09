@@ -311,7 +311,20 @@ function openParty() {
   const cafe = new URLSearchParams(location.search).get('cafe');
   const src = 'party/?embed=1' + (cafe ? '&cafe=' + encodeURIComponent(cafe) : '');
   body.innerHTML = `<iframe src="${src}" title="Multiplayer Party"
-    style="width:100%; height:540px; border:0; display:block; background:#ece9d8"></iframe>`;
+    style="width:100%; height:320px; border:0; display:block; background:#ece9d8"></iframe>`;
+  // Size the window to the app, like a real program: same-origin iframe, so
+  // watch its body and track content height (form is short, lobby is tall).
+  const fr = body.querySelector('iframe');
+  fr.addEventListener('load', () => {
+    const doc = fr.contentDocument;
+    if (!doc) return;
+    const fit = () => {
+      const h = Math.max(220, Math.min(doc.body.scrollHeight, Math.round(innerHeight * 0.8)));
+      fr.style.height = h + 'px';
+    };
+    fit();
+    new ResizeObserver(fit).observe(doc.body);
+  });
 }
 
 function openAbout() {
