@@ -86,6 +86,25 @@
        screen — the branded art only appears for an actual boot. */
     #loader.bare { background:#000; }
     #loader.bare .center, #loader.bare .frame, #loader.bare #tip { display:none; }
+    /* Rotate prompt — touch devices in portrait. Pure CSS so it autodetects:
+       appears the instant the phone goes upright, vanishes on rotate. Sits
+       above the loader/canvas (5) but below dialogs. Android normally never
+       sees it (orientation is hard-locked in fullscreen); this is the iOS path,
+       where the web has no lock API. */
+    #rotate { display:none; }
+    @media (pointer: coarse) and (orientation: portrait) {
+      #rotate { display:flex; position:fixed; inset:0; z-index:8; background:#05070d;
+                flex-direction:column; align-items:center; justify-content:center;
+                gap:18px; color:#c9d4e0; text-align:center; }
+    }
+    #rotate svg { animation: igrot 2.2s ease-in-out infinite; }
+    @keyframes igrot {
+      0%, 15% { transform: rotate(0deg); }
+      50%, 80% { transform: rotate(90deg); }
+      100% { transform: rotate(90deg); }
+    }
+    #rotate .rmsg { font-size:15px; letter-spacing:1px; color:#8fa9c8; }
+    #rotate .rmsg b { color:#e8b34b; }
     #tip { position:absolute; bottom:52px; left:0; right:0; text-align:center;
       color:#7d93b2; font-size:13px; font-style:italic; padding:0 40px; }
     #tip b { color:#c98b3b; font-style:normal; letter-spacing:1px; }
@@ -116,6 +135,14 @@
     <canvas id="canvas" width="1024" height="768" oncontextmenu="event.preventDefault()"></canvas>
   </div>
   <div id="fsbtn" title="Fullscreen">⛶</div>
+  <div id="rotate">
+    <svg width="64" height="104" viewBox="0 0 64 104" fill="none" aria-hidden="true">
+      <rect x="4" y="4" width="56" height="96" rx="10" stroke="#8fa9c8" stroke-width="4"/>
+      <rect x="12" y="16" width="40" height="66" rx="2" fill="#16233a"/>
+      <circle cx="32" cy="92" r="4" fill="#8fa9c8"/>
+    </svg>
+    <div class="rmsg"><b>Rotate your device</b><br>Zero Hour plays in landscape.</div>
+  </div>
   <div id="fsnag">
     <div class="window">
       <div class="title-bar">
@@ -169,9 +196,21 @@ setGameFavicon();
 const fsbtn = document.getElementById('fsbtn');
 const fsAvailable = !!(document.fullscreenEnabled || document.webkitFullscreenEnabled);
 const inFullscreen = () => !!(document.fullscreenElement || document.webkitFullscreenElement);
+// The battlefield is landscape. Where the platform allows it (Android Chrome,
+// fullscreen only) hard-lock the orientation so the game comes up 16:9 even if
+// the phone is held upright. iOS has no lock API — the #rotate overlay below
+// covers it (pure CSS: appears in portrait, vanishes on rotate).
+const lockLandscape = () => {
+  try {
+    if (screen.orientation && screen.orientation.lock)
+      screen.orientation.lock('landscape').catch(() => {});
+  } catch { /* not supported — overlay handles it */ }
+};
 const enterFullscreen = () => {
   const el = document.documentElement;
-  (el.requestFullscreen || el.webkitRequestFullscreen).call(el, { navigationUI: 'hide' });
+  const p = (el.requestFullscreen || el.webkitRequestFullscreen).call(el, { navigationUI: 'hide' });
+  if (p && p.then) p.then(lockLandscape).catch(() => {});
+  else setTimeout(lockLandscape, 300); // webkit-prefixed path returns undefined
 };
 if (!fsAvailable) {
   fsbtn.style.display = 'none';
