@@ -207,8 +207,7 @@ void install(Machine& m) {
             // bounds-clamped). Leaks the old block until the free path lands.
             uint32_t old = m.arg(2), bytes = m.arg(3);
             uint32_t p = m.alloc(bytes ? bytes : 1);
-            for (uint32_t i = 0; i < bytes; i++) m.write32(p + i, 0); // clear
-            if (old)
+            if (old) // copy old contents (dword steps); no old-size metadata yet
                 for (uint32_t i = 0; i + 4 <= bytes; i += 4)
                     m.write32(p + i, m.read32(old + i));
             m.ret(4, p);
@@ -227,8 +226,11 @@ void install(Machine& m) {
             m.ret(4, addr ? addr : m.alloc(size ? size : 1));
             return true;
         }
-        if (name == "VirtualFree" || name == "VirtualProtect") {
-            m.ret(name == "VirtualProtect" ? 4 : 3, 1);
+        if (name == "VirtualFree") { m.ret(3, 1); return true; }
+        if (name == "VirtualProtect") {
+            // VirtualProtect(addr, size, newProtect, lpflOldProtect).
+            if (m.arg(3)) m.write32(m.arg(3), 4 /*PAGE_READWRITE*/);
+            m.ret(4, 1);
             return true;
         }
 
@@ -324,10 +326,8 @@ void install(Machine& m) {
             m.ret(0, 1);
             return true;
         }
-        if (name == "GetCurrentProcess" || name == "GetCurrentThread") {
-            m.ret(0, 0xFFFFFFFFu); // pseudo-handle
-            return true;
-        }
+        if (name == "GetCurrentProcess") { m.ret(0, 0xFFFFFFFFu); return true; }
+        if (name == "GetCurrentThread") { m.ret(0, 0xFFFFFFFEu); return true; } // (HANDLE)-2
         if (name == "GetVersion") {
             m.ret(0, 0x0A280105); // build 0x0A28, Windows 5.1 (XP)
             return true;
@@ -338,6 +338,7 @@ void install(Machine& m) {
             m.write32(p + 8, 1);   // dwMinorVersion
             m.write32(p + 12, 2600); // dwBuildNumber
             m.write32(p + 16, 2);  // dwPlatformId = VER_PLATFORM_WIN32_NT
+            for (uint32_t i = 20; i < 20 + 128; i += 4) m.write32(p + i, 0); // szCSDVersion
             m.ret(1, 1);
             return true;
         }
@@ -358,14 +359,23 @@ void install(Machine& m) {
             m.ret(1, 0);
             return true;
         }
-        if (name == "IsProcessorFeaturePresent") { m.ret(1, 1); return true; }
+        if (name == "IsProcessorFeaturePresent") {
+            // Report ONLY what zhelezo implements, so a game doesn't select a
+            // path we can't run (e.g. SSE2). 2=CMPXCHG_DOUBLE, 6=XMMI(SSE1),
+            // 8=RDTSC, 23=CMPXCHG16B(no). SSE2(10)+ report false.
+            uint32_t f = m.arg(0);
+            m.ret(1, (f == 2 || f == 6 || f == 8) ? 1 : 0);
+            return true;
+        }
         if (name == "GetACP") { m.ret(0, 1252); return true; }
         if (name == "IsDebuggerPresent") { m.ret(0, 0); return true; }
         if (name == "GetSystemInfo") {
             uint32_t p = m.arg(0); // zero SYSTEM_INFO, set a plausible page size
             for (uint32_t i = 0; i < 36; i += 4) m.write32(p + i, 0);
-            m.write32(p + 4, 0x1000);  // dwPageSize
-            m.write32(p + 20, 1);      // dwNumberOfProcessors
+            m.write32(p + 4, 0x1000);    // dwPageSize
+            m.write32(p + 16, 1);        // dwActiveProcessorMask
+            m.write32(p + 20, 1);        // dwNumberOfProcessors
+            m.write32(p + 28, 0x10000);  // dwAllocationGranularity (64 KB)
             m.ret(1, 0);
             return true;
         }
