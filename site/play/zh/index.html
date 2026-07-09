@@ -595,7 +595,14 @@ const BOOT_STAGES = [
 ];
 const logAndReveal = (t) => {
   if (typeof t === 'string') {
-    if (!revealed && t.startsWith('[d8web] draw')) hideLoader();
+    // Multiplayer keeps the branded splash up through the whole autopilot
+    // menu walk — the canvas reveals on Module.onLobbyReached (engine fires
+    // it when the Game Options lobby opens), not on the first draw. The
+    // first draw just flips the message so the player knows what's happening.
+    if (!revealed && t.startsWith('[d8web] draw')) {
+      if (window.CAFE_ENABLE) msg.textContent = 'Setting up your party…';
+      else hideLoader();
+    }
     if (!revealed)
       for (const [marker, text] of BOOT_STAGES)
         if (t.includes(marker)) { msg.textContent = text; break; }
@@ -650,9 +657,13 @@ window.Module = {
   },
   onRuntimeInitialized: () => {
     msg.textContent = 'Loading the shell…';
-    // The reveal happens on the first '[d8web] draw' log (logAndReveal).
-    setTimeout(hideLoader, 30000);  // last-resort fallback
+    // Reveal: first '[d8web] draw' log (single player) or onLobbyReached
+    // (multiplayer — the splash covers the whole autopilot menu walk, which
+    // can include waiting for the host, hence the longer backstop).
+    setTimeout(hideLoader, window.CAFE_ENABLE ? 90000 : 30000);  // last resort
   },
+  // Multiplayer: the autopilot reached the Game Options lobby — show the game.
+  onLobbyReached: () => hideLoader(),
   // Match-load overlay. The engine fires onMatchLoadBegin one tick BEFORE its
   // fully-synchronous map load (GameLogic.cpp m_startNewGame defer), which
   // gives the browser exactly one paint to show this overlay; its spinner
