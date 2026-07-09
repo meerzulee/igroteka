@@ -24,6 +24,7 @@ CASES = [
     ("seh_chain.exe", "zhrun", [], 42, None),    # chain walk: inner+outer ran
     ("seh_noncont.exe", "zhrun", [], 1, "noncontinuable"),  # rejected, not resumed
     ("fpu.exe", "zhrun", [], 42, None),          # real x87 float math end-to-end
+    ("krt.exe", "zhrun", [], 42, None),          # CRT-startup kernel32 (heap/tls/vm/timing)
     ("paint.exe", "window_test", ["--paint"], 0, "guest GDI reached"),  # WM_PAINT→fb
     ("d3dclear.exe", "window_test", ["--d3d", "--corner", "336699"], 0, "reached the backbuffer"),
     ("tri.exe", "window_test", ["--d3d", "--tri"], 0, "reached the backbuffer"),  # rasterized triangle

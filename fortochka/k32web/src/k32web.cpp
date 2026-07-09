@@ -11,6 +11,26 @@ namespace {
 // Windows std-handle pseudo-values; any distinct nonzero constants work.
 constexpr uint32_t H_STDOUT = 0x12, H_STDERR = 0x13, H_STDIN = 0x11;
 
+// Host-side process state for the CRT-startup kernel32 surface (single guest
+// thread in tier 0). Reset per install().
+struct K32 {
+    uint32_t last_error = 0;
+    uint32_t tls[64] = {};   // Tls{Alloc,Get,Set,Free} slots
+    bool tls_used[64] = {};
+    uint32_t cmdline = 0;    // cached GetCommandLineA guest string
+    uint32_t heap_handle = 0x00E70001; // one process heap pseudo-handle
+};
+K32 g_k;
+
+// Write a NUL-terminated string into freshly-allocated guest memory, return VA.
+uint32_t guest_strdup(Machine& m, const char* s) {
+    uint32_t n = 0;
+    while (s[n]) n++;
+    uint32_t p = m.alloc(n + 1);
+    for (uint32_t i = 0; i <= n; i++) m.mem()[p + i] = (uint8_t)s[i];
+    return p;
+}
+
 // EXCEPTION_DISPOSITION
 constexpr uint32_t ExceptionContinueExecution = 0;
 constexpr uint32_t ExceptionContinueSearch = 1;
@@ -120,6 +140,7 @@ bool dispatch_seh(Machine& m, uint32_t code, uint32_t flags, uint32_t except_add
 } // namespace
 
 void install(Machine& m) {
+    g_k = K32{};
     m.add_handler([](Machine& m, const std::string& dll,
                      const std::string& name) -> bool {
         if (dll != "kernel32.dll") return false;
@@ -165,6 +186,192 @@ void install(Machine& m) {
             m.exited = true;
             m.exit_code = m.arg(0);
             return true; // no ret: nothing resumes
+        }
+
+        // ---- guest heap ----
+        if (name == "GetProcessHeap") { m.ret(0, g_k.heap_handle); return true; }
+        if (name == "HeapCreate") { m.ret(3, g_k.heap_handle); return true; }
+        if (name == "HeapDestroy") { m.ret(1, 1); return true; }
+        if (name == "HeapAlloc") {
+            // HeapAlloc(hHeap, dwFlags, dwBytes). HEAP_ZERO_MEMORY = 0x8.
+            uint32_t flags = m.arg(1), bytes = m.arg(2);
+            uint32_t p = m.alloc(bytes ? bytes : 1);
+            if (flags & 0x8)
+                for (uint32_t i = 0; i < bytes; i++) m.mem()[p + i] = 0;
+            m.ret(3, p);
+            return true;
+        }
+        if (name == "HeapReAlloc") {
+            // HeapReAlloc(hHeap, dwFlags, lpMem, dwBytes) — bump-alloc a fresh
+            // block and copy dwBytes across (no old-size tracking; over-copy is
+            // bounds-clamped). Leaks the old block until the free path lands.
+            uint32_t old = m.arg(2), bytes = m.arg(3);
+            uint32_t p = m.alloc(bytes ? bytes : 1);
+            for (uint32_t i = 0; i < bytes; i++) m.write32(p + i, 0); // clear
+            if (old)
+                for (uint32_t i = 0; i + 4 <= bytes; i += 4)
+                    m.write32(p + i, m.read32(old + i));
+            m.ret(4, p);
+            return true;
+        }
+        if (name == "HeapFree" || name == "HeapSize" ||
+            name == "HeapValidate") {
+            m.ret(3, name == "HeapFree" ? 1 : 0); // no free (bump allocator)
+            return true;
+        }
+
+        // ---- virtual memory ----
+        if (name == "VirtualAlloc") {
+            // VirtualAlloc(lpAddress, dwSize, flAllocationType, flProtect).
+            uint32_t addr = m.arg(0), size = m.arg(1);
+            m.ret(4, addr ? addr : m.alloc(size ? size : 1));
+            return true;
+        }
+        if (name == "VirtualFree" || name == "VirtualProtect") {
+            m.ret(name == "VirtualProtect" ? 4 : 3, 1);
+            return true;
+        }
+
+        // ---- TLS (single thread) ----
+        if (name == "TlsAlloc") {
+            for (uint32_t i = 0; i < 64; i++)
+                if (!g_k.tls_used[i]) {
+                    g_k.tls_used[i] = true;
+                    g_k.tls[i] = 0;
+                    m.ret(0, i);
+                    return true;
+                }
+            m.ret(0, 0xFFFFFFFFu); // TLS_OUT_OF_INDEXES
+            return true;
+        }
+        if (name == "TlsFree") {
+            uint32_t i = m.arg(0);
+            if (i < 64) g_k.tls_used[i] = false;
+            m.ret(1, 1);
+            return true;
+        }
+        if (name == "TlsGetValue") {
+            uint32_t i = m.arg(0);
+            m.ret(1, i < 64 ? g_k.tls[i] : 0);
+            return true;
+        }
+        if (name == "TlsSetValue") {
+            uint32_t i = m.arg(0);
+            if (i < 64) g_k.tls[i] = m.arg(1);
+            m.ret(2, 1);
+            return true;
+        }
+
+        // ---- critical sections (single-threaded no-ops) ----
+        if (name == "InitializeCriticalSection" ||
+            name == "EnterCriticalSection" || name == "LeaveCriticalSection" ||
+            name == "DeleteCriticalSection") {
+            m.ret(1, 0);
+            return true;
+        }
+        if (name == "InitializeCriticalSectionAndSpinCount") {
+            m.ret(2, 1);
+            return true;
+        }
+
+        // ---- timing (deterministic: derived from retired instruction count) ----
+        if (name == "GetTickCount") {
+            m.ret(0, (uint32_t)(m.cpu().icount / 1000)); // ~1 tick per 1k insns
+            return true;
+        }
+        if (name == "QueryPerformanceCounter") {
+            uint32_t p = m.arg(0);
+            m.write32(p, (uint32_t)m.cpu().icount);
+            m.write32(p + 4, (uint32_t)(m.cpu().icount >> 32));
+            m.ret(1, 1);
+            return true;
+        }
+        if (name == "QueryPerformanceFrequency") {
+            uint32_t p = m.arg(0);
+            m.write32(p, 1000000); // 1 MHz virtual timer
+            m.write32(p + 4, 0);
+            m.ret(1, 1);
+            return true;
+        }
+        if (name == "GetSystemTimeAsFileTime") {
+            uint32_t p = m.arg(0); // 64-bit FILETIME; a fixed 2004-ish stamp
+            m.write32(p, 0xD0000000);
+            m.write32(p + 4, 0x01C40000);
+            m.ret(1, 0);
+            return true;
+        }
+        if (name == "Sleep") { m.ret(1, 0); return true; }
+
+        // ---- module / process info ----
+        if (name == "GetModuleHandleA" || name == "GetModuleHandleW") {
+            // NULL name = the process image itself (base 0x400000).
+            m.ret(1, m.arg(0) == 0 ? 0x00400000 : 0x00400000);
+            return true;
+        }
+        if (name == "GetProcAddress") { m.ret(2, 0); return true; } // not resolvable yet
+        if (name == "LoadLibraryA" || name == "LoadLibraryW" ||
+            name == "LoadLibraryExA") {
+            m.ret(name == "LoadLibraryExA" ? 3 : 1, 0x10000000); // fake module
+            return true;
+        }
+        if (name == "FreeLibrary") { m.ret(1, 1); return true; }
+        if (name == "GetCommandLineA") {
+            if (!g_k.cmdline) g_k.cmdline = guest_strdup(m, "fortochka.exe");
+            m.ret(0, g_k.cmdline);
+            return true;
+        }
+        if (name == "GetCurrentThreadId" || name == "GetCurrentProcessId") {
+            m.ret(0, 1);
+            return true;
+        }
+        if (name == "GetCurrentProcess" || name == "GetCurrentThread") {
+            m.ret(0, 0xFFFFFFFFu); // pseudo-handle
+            return true;
+        }
+        if (name == "GetVersion") {
+            m.ret(0, 0x0A280105); // build 0x0A28, Windows 5.1 (XP)
+            return true;
+        }
+        if (name == "GetVersionExA" || name == "GetVersionExW") {
+            uint32_t p = m.arg(0); // OSVERSIONINFO: keep dwOSVersionInfoSize
+            m.write32(p + 4, 5);   // dwMajorVersion
+            m.write32(p + 8, 1);   // dwMinorVersion
+            m.write32(p + 12, 2600); // dwBuildNumber
+            m.write32(p + 16, 2);  // dwPlatformId = VER_PLATFORM_WIN32_NT
+            m.ret(1, 1);
+            return true;
+        }
+        if (name == "GetStartupInfoA" || name == "GetStartupInfoW") {
+            uint32_t p = m.arg(0); // zero STARTUPINFO (68 bytes), set cb
+            for (uint32_t i = 0; i < 68; i += 4) m.write32(p + i, 0);
+            m.write32(p, 68);
+            m.ret(1, 0);
+            return true;
+        }
+
+        // ---- error / misc ----
+        if (name == "SetLastError") { g_k.last_error = m.arg(0); m.ret(1, 0); return true; }
+        if (name == "GetLastError") { m.ret(0, g_k.last_error); return true; }
+        if (name == "SetUnhandledExceptionFilter") { m.ret(1, 0); return true; }
+        if (name == "OutputDebugStringA") {
+            fprintf(stderr, "[guest] %s", m.read_cstr(m.arg(0)).c_str());
+            m.ret(1, 0);
+            return true;
+        }
+        if (name == "IsProcessorFeaturePresent") { m.ret(1, 1); return true; }
+        if (name == "GetACP") { m.ret(0, 1252); return true; }
+        if (name == "IsDebuggerPresent") { m.ret(0, 0); return true; }
+        if (name == "GetSystemInfo") {
+            uint32_t p = m.arg(0); // zero SYSTEM_INFO, set a plausible page size
+            for (uint32_t i = 0; i < 36; i += 4) m.write32(p + i, 0);
+            m.write32(p + 4, 0x1000);  // dwPageSize
+            m.write32(p + 20, 1);      // dwNumberOfProcessors
+            m.ret(1, 0);
+            return true;
+        }
+        if (name == "lstrlenA") {
+            m.ret(1, (uint32_t)m.read_cstr(m.arg(0)).size());
+            return true;
         }
         return false;
     });
