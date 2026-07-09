@@ -196,6 +196,18 @@ skirmish in under 10 minutes, no docs.
       engine straight into host/join, skipping the LAN-lobby hunt. Igroteka is the
       gathering layer (public area + party rooms); "Start" opens every player's tab
       with the param → straight into the game. (Auto-join built 2026-07-09.)
+- [x] **Match-load loading screen** (2026-07-10). The map load is one synchronous
+      rAF tick — WebGL never presents mid-load (native LoadScreen draws but can't
+      composite) and DOM changes don't repaint; JSPI/ASYNCIFY ruled out earlier.
+      Shipped the pragmatic fix: the engine's existing m_startNewGame one-tick
+      defer leaves exactly ONE paint opportunity, so GameLogic fires
+      Module.onMatchLoadBegin there (+ onMatchLoadEnd after deleteLoadScreen) and
+      the page shows a compositor-animated overlay (transform spinner +
+      opacity pulse — the only CSS that keeps animating while the main thread is
+      blocked). Covers the MP peer barrier too. The REAL fix (native load screen
+      with live progress) = the async state-machine refactor: tryStartNewGame
+      (GameLogic.cpp:1180-2520) as a resumable state machine sliced at existing
+      updateLoadProgress call sites; scoped in the investigation, still open.
 - [ ] **Mid-game reconnect** ("close tab → reopen → rejoin the LIVE match" — user
       ask 2026-07-10). Retail ZH could NOT do this (a dropped player was gone), so
       it's a custom feature. What already works: the cafe **identity/token persists**
