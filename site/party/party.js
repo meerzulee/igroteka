@@ -25,7 +25,13 @@
   // talks to cafe-nw.mrz.sh.
   var LOCAL = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   var CAFE = params.get("cafe") || (LOCAL ? "http://localhost:8799" : "https://cafe-nw.mrz.sh");
-  var GAME = "/play/zh/"; // same-origin game boot
+  // Game registry — the Game select in the window picks from this. One game
+  // today; the café grows.
+  var GAMES = { zh: "/play/zh/" };
+  function gamePath() {
+    var sel = document.getElementById("game");
+    return GAMES[sel ? sel.value : "zh"] || GAMES.zh;
+  }
   var EMBED = params.get("embed") === "1";
   if (EMBED) document.body.classList.add("embed");
 
@@ -92,6 +98,15 @@
     );
     return; // don't wire the create/join forms
   }
+
+  // Game icon: the game's OWN icon from the user's install (same source as the
+  // desktop shortcut — user asset, never shipped). Falls back to the generic
+  // shipped icon already in the img tag.
+  import("/igroteka.js?v=31").then(function (m) {
+    return m.gameIconURL();
+  }).then(function (url) {
+    if (url) document.getElementById("gameIcon").src = url;
+  }).catch(function () { /* keep the fallback icon */ });
 
   // Remember the player's name across visits — restored here, saved as they
   // type (not only on submit), so it survives even an abandoned form.
@@ -178,7 +193,7 @@
   }
 
   function launch(code) {
-    var url = GAME + "?room=" + encodeURIComponent(code) +
+    var url = gamePath() + "?room=" + encodeURIComponent(code) +
       "&player=" + encodeURIComponent(engineName());
     // Carry a cafe override through to the game so both talk to the same server
     // (default is cafe-nw.mrz.sh for both; the override only matters for local

@@ -13,24 +13,37 @@
     * { box-sizing: border-box; }
     html, body { margin:0; height:100%; }
     body {
-      font-family: "Pixelated MS Sans Serif", Tahoma, sans-serif; font-size:12px;
+      /* Tahoma = the real Windows XP UI face (smooth, not the pixel bitmap
+         font — that one only holds up at exactly 11px) */
+      font-family: Tahoma, "Segoe UI", Geneva, sans-serif; font-size:12px;
       display:flex; align-items:center; justify-content:center; padding:18px;
+      /* Igroteka desktop wallpaper (same XP-bliss gradient as the desktop) */
       background:
-        radial-gradient(ellipse 80% 50% at 50% 30%, rgba(40,70,120,.4), transparent 70%),
-        repeating-linear-gradient(0deg, transparent 0 38px, rgba(70,110,170,.05) 38px 39px),
-        repeating-linear-gradient(90deg, transparent 0 38px, rgba(70,110,170,.05) 38px 39px),
-        linear-gradient(#05070d, #0a1220 60%, #060a12);
+        radial-gradient(ellipse 120% 60% at 70% 108%, #4a8f2a 0%, #3a7a20 28%, transparent 60%),
+        radial-gradient(ellipse 90% 45% at 20% 112%, #5aa332 0%, #47892a 30%, transparent 62%),
+        linear-gradient(#2f71c9 0%, #5b9ae0 45%, #9cc6ee 70%, #cfe6f7 100%);
       background-attachment: fixed;
     }
     .wrap { width:100%; max-width:420px; }
-    /* C&C wordmark, matching the game loader */
-    #wm { text-align:center; font-weight:800; letter-spacing:2px; line-height:1;
-          margin-bottom:16px; font-family:"Segoe UI", Roboto, sans-serif; }
-    #wm .a { font-size:13px; color:#8fa9c8; letter-spacing:5px; }
-    #wm .b { font-size:34px; margin-top:5px;
-      background:linear-gradient(#eaf2ff,#7fa8d8 60%,#3f6ba8);
-      -webkit-background-clip:text; background-clip:text; color:transparent; }
-    #wm .c { font-size:12px; color:#e8b34b; letter-spacing:8px; margin-top:3px; }
+    /* game picker: banner-style row — the game's own icon (from the user's
+       install, like the desktop shortcut) in a framed panel with the select */
+    #gameRow { margin-bottom:12px; }
+    #gameRow .picker { display:flex; align-items:center; gap:10px;
+      padding:8px 10px; background:linear-gradient(#ffffff, #ece9d8);
+      border:1px solid #aca899; border-radius:3px;
+      box-shadow: inset 0 1px 0 #fff; }
+    #gameRow img { width:32px; height:32px; image-rendering:pixelated; flex:0 0 32px;
+      filter: drop-shadow(0 1px 1px rgba(0,0,0,.25)); }
+    #gameRow select { flex:1; font-size:14px; height:26px; }
+    #gameRow label { display:none; } /* the banner IS the label */
+    /* a notch up from xp.css's 11-12px, and Tahoma everywhere xp.css would
+       reimpose the pixel face on form controls */
+    .window-body, .window-body input, .window-body select, .window-body button,
+    .window-body label, .window-body menu[role=tablist] button {
+      font-family: Tahoma, "Segoe UI", Geneva, sans-serif;
+      font-size: 13px;
+    }
+    .note, .err, .share { font-size: 12px; }
     .window { box-shadow:4px 4px 16px rgba(0,0,0,.55); }
     .window-body { padding:12px; }
     .lead { margin:2px 2px 12px; color:#222; }
@@ -64,18 +77,12 @@
                  window can fit the iframe to it (100% would echo the iframe
                  height back and never shrink) */
     body.embed .wrap { max-width:none; }
-    body.embed #wm, body.embed .title-bar, body.embed .backrow.pagefoot { display:none; }
+    body.embed .title-bar, body.embed .backrow.pagefoot { display:none; }
     body.embed .window { box-shadow:none; }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <div id="wm">
-      <div class="a">COMMAND &amp; CONQUER</div>
-      <div class="b">GENERALS</div>
-      <div class="c">ZERO HOUR</div>
-    </div>
-
     <div class="window">
       <div class="title-bar">
         <div class="title-bar-text">Multiplayer Party</div>
@@ -85,6 +92,17 @@
         <!-- create / join / browse -->
         <div id="forms">
           <p class="lead">Gather your friends, then launch straight into the battle.</p>
+
+          <!-- game picker — Igroteka is a café: more games will land here -->
+          <div class="field-row-stacked" id="gameRow">
+            <label for="game">Game</label>
+            <div class="picker">
+              <img id="gameIcon" src="../icons/games.png" alt="">
+              <select id="game">
+                <option value="zh" selected>C&amp;C Generals: Zero Hour</option>
+              </select>
+            </div>
+          </div>
 
           <menu role="tablist" class="justified">
             <button id="tabCreate" type="button" aria-selected="true" aria-controls="tabPanel">Create</button>
