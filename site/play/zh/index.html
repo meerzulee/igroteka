@@ -105,6 +105,32 @@
     }
     #rotate .rmsg { font-size:15px; letter-spacing:1px; color:#8fa9c8; }
     #rotate .rmsg b { color:#e8b34b; }
+    /* Match-load overlay. The map load is one long synchronous wasm call:
+       the main thread is blocked, so ONLY compositor-driven CSS (transform/
+       opacity) keeps animating — no width transitions, no JS-driven text.
+       Shown by Module.onMatchLoadBegin (fires one paint before the block),
+       faded out by Module.onMatchLoadEnd. */
+    #matchloader { position:fixed; inset:0; z-index:7; display:none;
+      flex-direction:column; align-items:center; justify-content:center; gap:26px;
+      color:#c9d4e0; text-align:center; opacity:1; transition:opacity .5s;
+      background:
+        radial-gradient(ellipse 80% 50% at 50% 32%, rgba(40,70,120,.35), transparent 70%),
+        linear-gradient(#05070d, #0a1220 60%, #060a12); }
+    #matchloader.on { display:flex; }
+    #mlWm { font-weight:800; letter-spacing:2px; line-height:1; }
+    #mlWm .a { font-size:15px; color:#8fa9c8; letter-spacing:5px; }
+    #mlWm .b { font-size:36px; margin-top:5px;
+      background:linear-gradient(#eaf2ff, #7fa8d8 60%, #3f6ba8);
+      -webkit-background-clip:text; background-clip:text; color:transparent; }
+    #mlRing { width:72px; height:72px; border-radius:50%;
+      border:3px solid rgba(90,140,210,.22); border-top-color:#7fb0ff;
+      animation: mlspin 1.1s linear infinite; }   /* transform-only: survives the block */
+    @keyframes mlspin { to { transform: rotate(360deg); } }
+    #mlMsg { font-size:13px; letter-spacing:2px; text-transform:uppercase; color:#8fa9c8;
+      animation: mlpulse 1.5s ease-in-out infinite alternate; } /* opacity-only */
+    @keyframes mlpulse { from { opacity:.4; } to { opacity:1; } }
+    #mlTip { font-size:12.5px; font-style:italic; color:#7d93b2; max-width:520px; padding:0 30px; }
+    #mlTip b { color:#c98b3b; font-style:normal; }
     #tip { position:absolute; bottom:52px; left:0; right:0; text-align:center;
       color:#7d93b2; font-size:13px; font-style:italic; padding:0 40px; }
     #tip b { color:#c98b3b; font-style:normal; letter-spacing:1px; }
@@ -142,6 +168,15 @@
       <circle cx="32" cy="92" r="4" fill="#8fa9c8"/>
     </svg>
     <div class="rmsg"><b>Rotate your device</b><br>Zero Hour plays in landscape.</div>
+  </div>
+  <div id="matchloader">
+    <div id="mlWm">
+      <div class="a">COMMAND &amp; CONQUER</div>
+      <div class="b">GENERALS</div>
+    </div>
+    <div id="mlRing"></div>
+    <div id="mlMsg">Preparing the battlefield…</div>
+    <div id="mlTip"></div>
   </div>
   <div id="fsnag">
     <div class="window">
@@ -597,6 +632,24 @@ window.Module = {
     msg.textContent = 'Loading the shell…';
     // The reveal happens on the first '[d8web] draw' log (logAndReveal).
     setTimeout(hideLoader, 30000);  // last-resort fallback
+  },
+  // Match-load overlay. The engine fires onMatchLoadBegin one tick BEFORE its
+  // fully-synchronous map load (GameLogic.cpp m_startNewGame defer), which
+  // gives the browser exactly one paint to show this overlay; its spinner
+  // (transform) and pulse (opacity) are compositor-driven, so they keep
+  // animating while the wasm main thread is blocked. The tip is chosen here,
+  // at show time — DOM text can't change mid-block.
+  onMatchLoadBegin: () => {
+    const m = document.getElementById('matchloader');
+    document.getElementById('mlTip').innerHTML =
+      '<b>TIP</b> &nbsp; ' + TIPS[Math.floor(Math.random() * TIPS.length)];
+    m.style.opacity = '1';
+    m.classList.add('on');
+  },
+  onMatchLoadEnd: () => {
+    const m = document.getElementById('matchloader');
+    m.style.opacity = '0';   // opacity transition — composited fade
+    setTimeout(() => m.classList.remove('on'), 600);
   },
   // EXIT GAME in the menu ends the engine — return to the desktop like
   // closing a fullscreen game dropped you back to Windows.
