@@ -637,7 +637,7 @@ window.Module = {
     addRunDependency('gamedata');
     (async () => {
       // Font is ours to host (Liberation Sans, SIL OFL)
-      const font = await fetch('./default.ttf').then(r => r.arrayBuffer());
+      const font = await fetch('./default.ttf?v=2').then(r => r.arrayBuffer());
       FS.writeFile('/fonts/default.ttf', new Uint8Array(font));
 
       // Audio staging split — see the DEST comment; lazy is debug-only.
