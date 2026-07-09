@@ -4,7 +4,7 @@
 
 Browser multiplayer for the C&C Generals: Zero Hour WASM port, end to end: gather
 a party in an XP-desktop UI, launch straight into a networked match over WebRTC.
-Engine at **build 31**.
+Engine at **build 32**.
 
 ### Multiplayer party
 - **Party UI** (`/party`, and as a desktop program window in Igroteka): create or
@@ -54,12 +54,14 @@ Engine at **build 31**.
   root causes fixed — `%hs` (an MSVC-only wide-printf specifier) mangled by musl at
   33 call sites, and `itoa` returning uninitialised stack garbage on libc++
   (`stringbuf::setbuf` is a no-op). Both fixed engine-wide.
+- **Wide gap on unrenderable characters.** A character missing from the font maps
+  to `.notdef`, whose advance is ~0.75em in Liberation Sans (2.7× a letter) — a
+  user-typed player name with an odd character showed a jarring gap. Missing glyphs
+  now render as a modest blank (no box, no chasm); present glyphs are untouched.
 - **Caching**: the game-glue import URL is now versioned so engine rebuilds actually
   reach browsers (a static URL had pinned users to an old build).
 
 ### Known / next
-- **"a weq" wide inter-word spacing** in the FreeType text renderer — under
-  investigation (engine build pending).
 - **Mid-game rejoin** (close tab → rejoin a live match) — planned, gated on the
   determinism harness; see `PLAN.md`.
 - **Deploy**: cafe worker (`cafe/`) needs `wrangler deploy` for the live site; the
