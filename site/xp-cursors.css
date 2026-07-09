@@ -1,0 +1,41 @@
+/* xp-cursors.css — XP-flavoured cursors for Igroteka pages.
+ *
+ * Original SVG art (white fill, black outline — the classic Windows look),
+ * NOT Microsoft's .cur files, in keeping with the no-MS-assets rule. Data-URI
+ * cursors with hotspots; every rule keeps a keyword fallback.
+ *
+ * The play page is intentionally NOT included: in-game the engine draws the
+ * game's own animated .ani cursors on the canvas.
+ */
+
+:root {
+  /* arrow: tip hotspot at 5 2 */
+  --xp-arrow: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cpath d='M5 2 L5 19 L9.5 15 L12.2 21.5 L15 20.2 L12.3 14 L18 14 Z' fill='%23fff' stroke='%23000' stroke-width='1.2' stroke-linejoin='round'/%3E%3C/svg%3E") 5 2, default;
+  /* hand: index fingertip hotspot at 10 3 */
+  --xp-hand: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cpath d='M9 3.5c0-1.1 1.7-1.1 1.7 0V10h.8V4.6c0-1.1 1.7-1.1 1.7 0V10h.8V5.5c0-1.1 1.6-1.1 1.6 0V10h.8V7c0-1 1.5-1 1.5 0v6.3c0 3.1-1.9 5.2-5 5.2h-1.1c-1.8 0-2.8-.7-3.7-2L5.3 12.4c-.6-.9.7-2 1.5-1.2l1.2 1.4V3.5z' fill='%23fff' stroke='%23000' stroke-width='1.1' stroke-linejoin='round'/%3E%3C/svg%3E") 10 3, pointer;
+}
+
+/* Every selector is html-prefixed for +1 specificity: this sheet loads
+   before each page's inline <style>, whose cursor keywords (e.g.
+   #startBtn { cursor:pointer }) would otherwise win the tie. */
+html, html body { cursor: var(--xp-arrow); }
+
+/* surfaces that set their own cursor keyword — re-skin them */
+html .window, html .title-bar, html .icon, html .taskBtn, html .window-body,
+html #taskbar, html #startMenu, html #desktop { cursor: var(--xp-arrow); }
+
+/* clickables get the glove */
+html button, html a, html select, html summary,
+html .item, html .foot, html #startBtn, html #trayFs,
+html menu[role=tablist] button,
+html input[type=checkbox], html input[type=radio],
+html input[type=checkbox] + label, html input[type=radio] + label {
+  cursor: var(--xp-hand);
+}
+
+/* text entry keeps the native I-beam (XP's looks the same) */
+html input[type=text], html input[type=password], html input[type=search],
+html input[type=email], html input[type=number], html input:not([type]),
+html textarea {
+  cursor: text;
+}

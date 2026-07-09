@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Igroteka</title>
   <link rel="stylesheet" href="xp.css">
+  <link rel="stylesheet" href="xp-cursors.css?v=2">
   <script>
     // surface boot errors instead of a silently dead desktop
     window.__bootErr = null;
@@ -49,8 +50,30 @@
       color: #fff; font-weight: bold; font-style: italic; font-size: 14px;
       border: 0; box-shadow: inset 0 0 4px rgba(255,255,255,.5); cursor: pointer;
     }
-    #tasks { flex: 1; display: flex; gap: 4px; }
-    .taskBtn { height: 22px; min-width: 140px; text-align: left; font-size: 11px; }
+    #tasks { flex: 1; display: flex; gap: 3px; overflow: hidden; }
+    /* XP taskbar buttons: blue gradient pill with the app icon; darker,
+       inset look while the window is focused (.active) */
+    /* #tasks-scoped: xp.css ships button:not(:disabled).active (pressed
+       silver) which out-specifies a bare class and grayed these out */
+    #tasks .taskBtn {
+      height: 24px; min-width: 150px; max-width: 190px;
+      display: flex; align-items: center; gap: 5px; padding: 0 8px 0 6px;
+      background: linear-gradient(#5390f4 0%, #3b79e1 10%, #2a63cf 50%, #2861d5 100%);
+      border: 0; border-radius: 3px; color: #fff; font-size: 11px;
+      font-family: inherit; text-align: left; cursor: default;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.35), inset -1px 0 rgba(0,0,0,.15),
+                  0 1px 2px rgba(0,0,0,.25);
+    }
+    #tasks .taskBtn:focus { outline: none; }
+    #tasks .taskBtn:hover { background: linear-gradient(#6ba2f8 0%, #4d88e8 10%, #3a72d8 50%, #3a71dd 100%); }
+    #tasks .taskBtn.active {
+      background: linear-gradient(#1f47a8 0%, #1c4fb5 50%, #2258bd 100%);
+      box-shadow: inset 1px 1px 3px rgba(0,0,0,.45);
+    }
+    #tasks .taskBtn img { width: 16px; height: 16px; flex: 0 0 16px;
+      filter: drop-shadow(0 1px 1px rgba(0,0,0,.35)); }
+    #tasks .taskBtn span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+      text-shadow: 0 1px 1px rgba(0,0,0,.4); }
     #clock { color: #fff; font-size: 11px; padding: 0 10px; border-left: 1px solid rgba(255,255,255,.3);
              background: linear-gradient(#1d9ede, #1372ba); height: 100%; display:flex; align-items:center; }
     /* Fullscreen toggle lives in the tray, XP style */
@@ -238,7 +261,7 @@ const tasks = document.getElementById('tasks');
 let zTop = 10;
 const openWindows = new Map();  // id -> {el, task}
 
-function makeWindow(id, title, w, h) {
+function makeWindow(id, title, w, icon) {
   // Singleton per app id: re-focus instead of duplicating
   const existing = openWindows.get(id);
   if (existing && document.body.contains(existing.el)) {
@@ -264,14 +287,32 @@ function makeWindow(id, title, w, h) {
 
   const task = document.createElement('button');
   task.className = 'taskBtn';
-  task.textContent = title;
+  if (icon) {
+    const im = document.createElement('img');
+    im.src = icon; im.alt = '';
+    task.appendChild(im);
+  }
+  const lbl = document.createElement('span');
+  lbl.textContent = title;
+  task.appendChild(lbl);
   tasks.appendChild(task);
 
-  const focus = () => { el.style.zIndex = ++zTop; };
+  // Focused window owns the pressed taskbar button, like real XP.
+  const focus = () => {
+    el.style.zIndex = ++zTop;
+    document.querySelectorAll('.taskBtn').forEach(t => t.classList.remove('active'));
+    task.classList.add('active');
+  };
   focus();
   el.addEventListener('mousedown', focus);
-  task.onclick = () => { el.style.display = ''; focus(); };
-  el.querySelector('[aria-label="Minimize"]').onclick = () => { el.style.display = 'none'; };
+  const minimize = () => { el.style.display = 'none'; task.classList.remove('active'); };
+  // XP taskbar behavior: click restores; clicking the focused window's button
+  // minimizes it.
+  task.onclick = () => {
+    if (el.style.display !== 'none' && task.classList.contains('active')) minimize();
+    else { el.style.display = ''; focus(); }
+  };
+  el.querySelector('[aria-label="Minimize"]').onclick = minimize;
   el.querySelector('[aria-label="Close"]').onclick = () => { el.remove(); task.remove(); openWindows.delete(id); };
   openWindows.set(id, { el, task });
 
@@ -305,7 +346,7 @@ function addIcon(id, glyph, label, x, y, onOpen) {
 // button, drag, minimize) hosting the party app. ?embed=1 strips the app's own
 // page chrome; launching the game navigates the top frame (the whole desktop).
 function openParty() {
-  const body = makeWindow('party', 'Multiplayer Party', 440);
+  const body = makeWindow('party', 'Multiplayer Party', 440, 'icons/games.png');
   if (!body) return;
   // Forward a ?cafe= override from the desktop URL (local/staging testing).
   const cafe = new URLSearchParams(location.search).get('cafe');
@@ -328,7 +369,7 @@ function openParty() {
 }
 
 function openAbout() {
-  const body = makeWindow('about', 'About Igroteka', 420);
+  const body = makeWindow('about', 'About Igroteka', 420, 'icons/doc.png');
   if (!body) return;
   body.innerHTML = `<div style="padding:14px;font-size:12px">
     <p><b>Igroteka</b> — the 2000s gaming café, in your browser.</p>
@@ -346,7 +387,7 @@ function openAbout() {
 }
 
 async function openSetup() {
-  const body = makeWindow('setup', 'Setup — C&C Generals: Zero Hour', 520);
+  const body = makeWindow('setup', 'Setup — C&C Generals: Zero Hour', 520, 'icons/cd.png');
   if (!body) return;
   let stepEl;
   const render = (html, btns) => {
@@ -513,7 +554,7 @@ async function openSetup() {
 }
 
 async function openUninstall() {
-  const body = makeWindow('uninstall', 'Uninstall — C&C Generals: Zero Hour', 520);
+  const body = makeWindow('uninstall', 'Uninstall — C&C Generals: Zero Hour', 520, 'icons/trash.png');
   if (!body) return;
   const render = (html, btns) => {
     body.innerHTML = `<div class="wizardStep"><div class="wizardArt"><img src="icons/trash.png" style="width:56px;height:56px"></div>
