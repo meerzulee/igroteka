@@ -252,8 +252,15 @@ re-based on it.
       (not yet invoked)
 - [~] `k32web` minimum: identity-mapped guest arena, VirtualAlloc/heaps, TLS,
       GetModuleHandle/GetProcAddress (host-stub aware), files→OPFS (reuse
-      Track 1 VFS), stdout — STARTED (`fortochka/k32web/`): stdcall dispatch,
-      GetStdHandle/WriteFile/ExitProcess; grows stub-log driven
+      Track 1 VFS), stdout — CRT-startup surface LIVE (`fortochka/k32web/`,
+      ~45 functions): GetStdHandle/WriteFile/ExitProcess, SEH RaiseException,
+      heap (HeapAlloc/Free/ReAlloc, GetProcessHeap), VirtualAlloc/Free/Protect,
+      TLS (Alloc/Get/Set/Free), critical sections (no-op), timing (GetTickCount/
+      QueryPerformanceCounter+Frequency, deterministic from icount),
+      module/version/startup (GetModuleHandle/Version/CommandLine/StartupInfo/
+      SystemInfo), Set/GetLastError, OutputDebugString. `krt.exe` exercises the
+      batch → exit 42. Still stub-log driven — unimplemented imports throw named.
+      TODO for real boot: GetProcAddress resolution, files→OPFS, wide-char.
 - [ ] Boundary thunk generator: stdcall/cdecl arg lifting from guest stack →
       native call → EAX/EDX:EAX return, generated from an IDL-ish table, both
       directions (hand-rolled per-import for now; generator when count grows)
