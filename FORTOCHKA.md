@@ -277,12 +277,15 @@ HLE, no Wine/no system emulator. **F1 done.**
 
 **Exit criterion:** `window.exe` opens a window, paints on WM_PAINT, responds
 to input — full round trip guest→host→guest.
-**2026-07-10: reverse-thunk round trip MET (headless).** `window.exe` (real
-PE, 7 user32 imports) drives the pump; DispatchMessageA re-enters the guest
-WndProc, which accumulates seeded WM_USER wParams to exit 30 — only reachable
-via host→guest→host. Under ASan/UBSan. Codex reviewing ABI edge cases
-(stdcall cleanup, nested SendMessage, ExitProcess-from-wndproc, fault EIP)
-before this is marked fully done. Canvas window + WM_PAINT + live input = F3.
+**2026-07-10: reverse-thunk round trip MET (headless), ABI-reviewed.**
+`window.exe` (real PE, 7 user32 imports) drives the pump; DispatchMessageA
+re-enters the guest WndProc, which accumulates seeded WM_USER wParams to exit
+30 — only reachable via host→guest→host. Under ASan/UBSan. Codex reviewed the
+ABI: ESP restore, shared-sentinel nesting, ExitProcess-from-wndproc, and
+fault-EIP precision all validated correct; two bugs it found (unbounded
+reverse-thunk recursion, GetMessage empty-queue semantics) fixed with a depth
+guard + `recurse.exe` regression rung. Canvas window + WM_PAINT + live input,
+plus the SEH/`seh.exe` item below, remain for F2/F3 proper.
 
 ### Phase F3 — Pixels (target: 6–10 weeks, parallel with F2 after F1)
 
