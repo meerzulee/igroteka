@@ -147,10 +147,26 @@ skirmish in under 10 minutes, no docs.
       DataChannel; desync detection via the Phase 0 checksum harness
 - [ ] Lobby web UI: create/join room, map picker, army picker, chat
 - [ ] Latency tuning: command turn length vs RTT; spectator-safe pause on drop
-- [ ] In-game HUD (top-right): player name (truncate if long, e.g. `verylongname…`)
-      + live ping in ms per peer. Ping source = `Connection::m_averageLatency`
-      (command-ACK RTT) or DataChannel RTT from the bridge. Also fixes the empty
-      ping column in the Disconnection menu (same latency source).
+- [x] In-game HUD (top-right): player name (truncated if long) + live ping in ms,
+      per-player rows with host crown, room code + player count. **Built
+      2026-07-10** as an HTML overlay on the play page (`site/play/zh/index.html`)
+      reading `window.CafeUdp.status()`. Ping source = **DataChannel RTT** from the
+      bridge (`getStats()` candidate-pair `currentRoundTripTime`, polled 2s) — no
+      engine change needed, so it's live now. Player names are HTML-escaped.
+- [ ] **Disconnection Menu / mid-match lockstep stall** (observed 2026-07-10: match
+      loads + renders, then the engine pops "DISCONNECTION MENU" mid-game). Root
+      cause: the deterministic-lockstep turn barrier can't advance because a peer's
+      turn-N command packets stop arriving in time. The DataChannel is
+      unreliable/unordered (UDP-like) and the engine's own `Transport`/
+      `ConnectionManager` ACK-resend is supposed to cover loss, but under the wasm
+      single-threaded main loop a slow/blocked recv starves the JS event loop, so
+      DataChannel messages don't get delivered → the barrier times out → disconnect
+      vote. Needs: (a) confirm the transport ACK/resend actually runs each frame on
+      wasm (the non-blocking state-machine barrier, not a spin-wait Sleep), (b)
+      desync-vs-drop distinction via the Phase-0 CRC harness, (c) tune turn length
+      vs RTT. This is THE core Phase-3 netcode task.
+- [ ] Wire the Disconnection Menu's empty ping column to the same latency source
+      (`Connection::m_averageLatency` or the bridge RTT). Cosmetic vs the stall above.
 - [ ] Auto-join / autopilot: boot params (`?host=1` / `?autojoin=1`) drive the
       engine straight into host/join, skipping the LAN-lobby hunt. Igroteka is the
       gathering layer (public area + party rooms); "Start" opens every player's tab
