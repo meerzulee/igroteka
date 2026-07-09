@@ -36,3 +36,9 @@ dvijoke/
 site/play/zh/GeneralsXZH.js
 site/play/zh/GeneralsXZH.wasm
 site/gamedata
+
+# Fortochka: build artifacts
+fortochka/**/build*/
+fortochka/corpus/bin/
+fortochka/**/*.o
+fortochka/**/bench/*.bin
