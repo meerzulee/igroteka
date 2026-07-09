@@ -272,8 +272,14 @@ HLE, no Wine/no system emulator. **F1 done.**
 - [ ] Message-pump ↔ rAF integration: frame pacing, spin-loop detection
       (PeekMessage-spin games burn 100% CPU — detect and yield)
 - [ ] `inweb`: mouse/keyboard events → messages + dinput8 state; pointer lock
-- [ ] SEH: `fs:[0]` chain walk, guest handler invocation, unwind — `seh.exe`
-      corpus binary passes
+- [~] SEH: `fs:[0]` chain walk, guest handler invocation, unwind — `seh.exe`
+      corpus binary passes. Chain walk + handler invocation + disposition
+      (ContinueExecution/ContinueSearch) LIVE: TIB/fs_base in `machine.cpp`,
+      dispatcher + `RaiseException` in `k32web.cpp`; `seh.exe` (single handler)
+      and `seh_chain.exe` (2 frames, inner ContinueSearch → outer handles) both
+      pass. **Still pending:** RtlUnwind / `__except` block transfer, fault→SEH
+      dispatch (explicit RaiseException only), real CONTEXT (zeroed stub now).
+      Codex reviewing the design before these increments.
 
 **Exit criterion:** `window.exe` opens a window, paints on WM_PAINT, responds
 to input — full round trip guest→host→guest.
