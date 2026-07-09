@@ -22,14 +22,36 @@ python3 tools/pescope.py /path/to/RomeTW.exe
 launches without the client; if it refuses, it does not onboard — hard rule,
 no §1201 gray areas). Record verdict here:
 
-> **Verdict (2026-07-10, RTW Gold via Steam on cachynator):** NO DRM WRAPPER.
-> No `.bind`/SteamStub, no packer sections — plain PE32, base 0x400000,
-> reloc-stripped-era layout. Links `steam_api.dll` (18 imports) as an
-> ordinary DLL. Remaining soft check: launch under Wine *without* the Steam
-> client, authentic files untouched — if the game proceeds past a failed
-> `SteamAPI_Init`, running it involves zero circumvention. If it hard-exits,
-> flagship reconsiders (we do not emulate steam_api — standing rule).
-> Same result for RomeTW-BI.exe (identical import profile).
+> **Verdict (2026-07-10, RTW Gold via Steam on cachynator):**
+>
+> *Static:* NO DRM WRAPPER. No `.bind`/SteamStub, no packer sections — plain
+> PE32, base 0x400000, unencrypted. Links `steam_api.dll` (18 imports) as an
+> ordinary DLL. So this is NOT a §1201 *access-control* case: nothing is
+> decrypted to run the code.
+>
+> *Runtime (the deciding test):* launched under Wine with the Steam client
+> shut down, authentic files untouched (relay trace `/tmp/rtw-relay.log`).
+> The game's OWN code runs, then:
+> ```
+> 00dc:Call KERNEL32.OutputDebugStringA(... "Steam must be running to play this game\n")
+> 00dc:Call ntdll.NtRaiseException(...)
+> 00dc:Call KERNEL32.ExitProcess(00000000)
+> ```
+> RTW.exe performs a **Steam client-presence check** (via steam_api.dll) and
+> **refuses to run without the live client.** This is the plan's
+> "demands a live client" case. Per our own hard rule, RTW Gold **does not
+> onboard as-is** — we do not emulate/replace steam_api (§1201-gray, banned).
+>
+> *Nuance for the flagship decision:* the exe is unencrypted and the user owns
+> a lawful license; the block is a runtime ownership check, not an encryption
+> wall. It runs normally with the real Steam client up (that path is where the
+> d3d census must be captured). The blocker is specifically **browser has no
+> Steam client** to satisfy the check.
+>
+> **d3d census + shader/renderer experiments: BLOCKED** until flagship
+> resolved — they need the game to actually render, which needs the Steam
+> client running (can't be automated here without touching the user's live
+> session). Not yet captured.
 
 ## 2. Import table — the canonical scope list
 
