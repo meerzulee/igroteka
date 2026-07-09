@@ -28,6 +28,18 @@ worthwhile target in the era we care about: D3D9, big single-threaded sim,
 shipped middleware DLLs, registry use, CD-audio-era sound stack. If Fortochka
 runs RTW, the catalog below it comes nearly free.
 
+**Flagship policy (revised 2026-07-10 after F0):** RTW Gold (the only lawful
+copy that exists — retail was SafeDisc, GOG doesn't carry it) performs a live
+Steam client-presence check and refuses to run without it (`RECON.md`). Its
+exe is unencrypted, so this is not a §1201 wall — but satisfying an ownership
+check in a browser would mean faking steam_api, which our red lines ban. So:
+**RTW is the aspirational/reference target, used only for local extract-only
+recon** (behavior oracle + d3d census with the user's real client running,
+never shipped). **The browser BUILD flagship is a truly DRM-free title** —
+leading candidate Stronghold Crusader (2002, D3D, GOG DRM-free), pending its
+own F0. Everything in the runtime is game-agnostic; the flagship only picks
+which import table we grind. Nothing built so far is lost by this split.
+
 Constraint policy for this document: **we do not plan around what exists; we
 plan around what is buildable.** Boxedwine, Hangover, v86, CheerpX are design
 references and existence proofs, not dependencies and not ceilings. Nobody has
@@ -242,9 +254,13 @@ re-based on it.
 
 **Exit criterion:** `hello.exe` — a real PE we compiled — prints via emulated
 `printf` → `WriteConsole` in a browser tab.
-**2026-07-10: native half MET** — `zhrun corpus/bin/hello.exe` prints through
+**2026-07-10: MET (both halves).** `zhrun corpus/bin/hello.exe` prints through
 the full peload→zhelezo→hostcall→k32web pipeline, exit 0, output identical to
-the Wine oracle. Remaining for full F1: Emscripten build + browser shell.
+the Wine oracle. Emscripten build (`fortochka/runtime/web/`, `-fwasm-exceptions`,
+50 KB wasm) verified in a real browser: "Run bundled hello.exe" prints
+`hello from fortochka corpus` / `zhweb: exit=0 icount=18` in the tab. A real
+32-bit Windows PE, x86 under our interpreter, kernel32 imports served by our
+HLE, no Wine/no system emulator. **F1 done.**
 
 ### Phase F2 — Window (target: 3–4 weeks)
 
@@ -351,6 +367,15 @@ The trailer moment for the whole platform.
 
 ## Legal posture
 
+- **Scope (revised 2026-07-10): private proof-of-concept, never published.**
+  Fortochka runs locally on the author's own hardware against their own
+  lawfully-licensed copies; nothing is hosted, shipped, or distributed. This
+  is the strongest personal-use/research posture and moots every *distribution*
+  question. It does NOT dissolve DRM rules: the steam_api client-presence check
+  in RTW is a *technical* blocker in a browser (no Steam client there)
+  regardless of publishing, so RTW stays extract-only recon and the booting
+  browser demo targets a DRM-free flagship. If this ever moves toward release,
+  re-run this whole section.
 - **Clean-room HLE from documentation** — Wine's own legal foundation,
   reinforced by *Google v. Oracle* (API reimplementation). We ship zero
   Microsoft, SEGA, or Creative Assembly bytes.
