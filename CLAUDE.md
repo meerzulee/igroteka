@@ -6,6 +6,9 @@ architecture, `PLAN.md` for the current execution plan and phase status.
 
 ## Hard rules
 
+- **Reviews go through Codex.** For any design/correctness second opinion, route it to
+  Codex (`/codex:rescue`), not the built-in `advisor` tool. Give it adversarial,
+  file:line-scoped prompts; it diagnoses, we apply. (Standing user preference.)
 - **Never commit game assets.** `*.big` and `game-data/` are gitignored on purpose —
   they are EA's copyrighted data. Users bring their own files at runtime (OPFS).
 - **License boundary:** `d8web/` is MIT and must stay engine-free — no code from the

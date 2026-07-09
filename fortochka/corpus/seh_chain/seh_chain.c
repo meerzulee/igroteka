@@ -1,11 +1,13 @@
-/* seh_chain.exe — proves the fs:[0] WALK, not just a single handler.
+/* seh_chain.exe — proves the fs:[0] WALK across properly nested frames.
  *
- * Installs two SEH frames. The inner one (installed last, called first) returns
- * ExceptionContinueSearch, so the dispatcher must advance down the chain to the
- * outer handler, which handles it. Exit code encodes the order the handlers
- * ran: inner sets bit 1, outer sets bit 2 and records the code. A correct walk
- * exits 0x1234-derived 42; a dispatcher that stops at the first frame or
- * mis-links the chain yields something else.
+ * Real SEH registration records sit at strictly increasing stack addresses as
+ * the chain is walked outward (a deeper call frame installs a lower-addressed
+ * record). We mirror that: start() installs the OUTER handler, then calls
+ * raise_it() which installs the INNER handler in its own deeper frame and
+ * raises. The dispatcher walks inner (lower addr, called first) → outer (higher
+ * addr). The inner returns ExceptionContinueSearch, so the walk must advance to
+ * the outer, which handles it. Exit 42 iff both ran in order with the right
+ * code — validating both chain traversal and the frame-ordering rule.
  */
 #include <windows.h>
 
@@ -22,7 +24,7 @@ inner_handler(EXCEPTION_RECORD *rec, void *frame, CONTEXT *ctx, void *disp)
 {
     (void)rec; (void)frame; (void)ctx; (void)disp;
     g_order |= 1;
-    return ExceptionContinueSearch; /* 1: not mine, keep walking */
+    return ExceptionContinueSearch; /* 1: not mine, keep walking outward */
 }
 
 static EXCEPTION_DISPOSITION __cdecl
@@ -43,16 +45,30 @@ static void install(SEH_FRAME *f, void *handler)
     __asm__ volatile("movl %0, %%fs:0" ::"r"(f) : "memory");
 }
 
+static void unlink_frame(SEH_FRAME *f)
+{
+    __asm__ volatile("movl %0, %%fs:0" ::"r"(f->prev) : "memory");
+}
+
+/* Deeper frame: its registration record is at a lower stack address than
+ * start()'s, so it is walked first. noinline keeps it a real call frame — under
+ * -Os an inlined body would put both records in start()'s frame at arbitrary
+ * order, which the dispatcher's frame-ordering rule (correctly) rejects. */
+__attribute__((noinline)) static void raise_it(void)
+{
+    SEH_FRAME inner;
+    install(&inner, (void *)inner_handler);
+    RaiseException(0x1234, 0, 0, (const ULONG_PTR *)0);
+    unlink_frame(&inner);
+}
+
 void start(void)
 {
-    SEH_FRAME outer, inner;
+    SEH_FRAME outer;
 
     install(&outer, (void *)outer_handler);
-    install(&inner, (void *)inner_handler); /* inner is now fs:[0] head */
-
-    RaiseException(0x1234, 0, 0, (const ULONG_PTR *)0);
-
-    __asm__ volatile("movl %0, %%fs:0" ::"r"(outer.prev) : "memory");
+    raise_it();
+    unlink_frame(&outer);
 
     /* inner ran (1) AND outer ran (2) AND code seen == 0x1234 → 42. */
     ExitProcess((g_order == 3 && g_code == 0x1234) ? 42 : g_order);

@@ -22,6 +22,7 @@ CASES = [
     ("recurse.exe", "window_test", ["--recurse-guard"], 0, "depth guard tripped"),
     ("seh.exe", "zhrun", [], 42, None),          # fs:[0] handler saw 0x1234
     ("seh_chain.exe", "zhrun", [], 42, None),    # chain walk: inner+outer ran
+    ("seh_noncont.exe", "zhrun", [], 1, "noncontinuable"),  # rejected, not resumed
 ]
 
 

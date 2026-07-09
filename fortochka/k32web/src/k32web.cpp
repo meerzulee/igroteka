@@ -14,21 +14,64 @@ constexpr uint32_t H_STDOUT = 0x12, H_STDERR = 0x13, H_STDIN = 0x11;
 // EXCEPTION_DISPOSITION
 constexpr uint32_t ExceptionContinueExecution = 0;
 constexpr uint32_t ExceptionContinueSearch = 1;
+constexpr uint32_t EXCEPTION_NONCONTINUABLE = 0x1;
 
-// Dispatch a synthetic exception through the guest's fs:[0] SEH chain. Builds an
-// EXCEPTION_RECORD in TIB scratch and reverse-thunks each registered handler
-// with (record, establisher_frame, context, dispatcher). Honors the handler's
-// disposition: ContinueExecution stops the walk (caller resumes), everything
-// else advances to the next frame. Returns true if a handler took it, false if
-// the chain was exhausted (unhandled).
+constexpr uint32_t EXC_RECORD_SIZE = 0x50;  // { code,flags,*rec,addr,n,info[15] }
+constexpr uint32_t CONTEXT_SIZE = 0x2CC;    // i386 CONTEXT
+constexpr uint32_t CTX_FLAGS = 0x00010007;  // CONTEXT_i386|INTEGER|CONTROL
+
+// Fill an i386 CONTEXT at guest address `ctx` from the current CPU state — so a
+// handler reading ContextRecord->Esp/Ebp/Eip/registers sees sane values. This
+// is the state at the exception point (for RaiseException, the call site).
+void write_context(Machine& m, uint32_t ctx, uint32_t except_addr) {
+    for (uint32_t i = 0; i < CONTEXT_SIZE; i += 4) m.write32(ctx + i, 0);
+    const auto& c = m.cpu();
+    m.write32(ctx + 0x00, CTX_FLAGS);
+    m.write32(ctx + 0x9C, c.gpr[zhelezo::EDI]);
+    m.write32(ctx + 0xA0, c.gpr[zhelezo::ESI]);
+    m.write32(ctx + 0xA4, c.gpr[zhelezo::EBX]);
+    m.write32(ctx + 0xA8, c.gpr[zhelezo::EDX]);
+    m.write32(ctx + 0xAC, c.gpr[zhelezo::ECX]);
+    m.write32(ctx + 0xB0, c.gpr[zhelezo::EAX]);
+    m.write32(ctx + 0xB4, c.gpr[zhelezo::EBP]);
+    m.write32(ctx + 0xB8, except_addr);      // Eip
+    m.write32(ctx + 0xC0, c.eflags);         // EFlags
+    m.write32(ctx + 0xC4, c.gpr[zhelezo::ESP]); // Esp
+}
+
+// Dispatch a synthetic exception through the guest's fs:[0] SEH chain, reverse-
+// thunking each registered handler with (record, establisher, context,
+// dispatcher). The EXCEPTION_RECORD and CONTEXT live on the guest stack below
+// the current ESP — one frame per dispatch, so a handler that raises a nested
+// exception cannot clobber the outer record. Honors dispositions:
+// ContinueExecution stops the walk (caller resumes), ContinueSearch advances;
+// anything else is an invalid disposition. The chain must climb strictly toward
+// higher stack addresses (real SEH's frame-order rule), which also rejects
+// cyclic/corrupt chains. Returns true if handled, false if the chain was
+// exhausted unhandled.
 //
-// Reference: ReactOS/Wine RtlDispatchException — the chain walk and disposition
+// Reference: ReactOS/Wine RtlDispatchException — walk, ordering, and disposition
 // semantics; read, not copied.
+//
+// KNOWN GAPS (need feature work, not fixes here):
+//  - Fault→SEH: dispatching a real CPU fault must first snapshot ALL guest
+//    registers into CONTEXT and, on ContinueExecution, restore the (possibly
+//    handler-edited) CONTEXT — call_guest only preserves ESP/EIP, so the fault
+//    path will need its own register save/apply around this call.
+//  - RtlUnwind / __except transfer: a handler that unwinds sets guest ESP/EIP
+//    to an __except block instead of resuming at the exception point. That is
+//    incompatible with call_guest's unconditional ESP/EIP restore; it needs a
+//    distinct "transfer, do not return to dispatcher" path.
+//  - CONTEXT here reflects the RaiseException call site only (integer+control),
+//    not FP/debug/extended state.
 bool dispatch_seh(Machine& m, uint32_t code, uint32_t flags, uint32_t except_addr,
                   uint32_t nparams, uint32_t params_ptr) {
-    const uint32_t tib = m.tib_addr();
-    const uint32_t rec = tib + Machine::TIB_SCRATCH_RECORD;
-    const uint32_t ctx = tib + Machine::TIB_SCRATCH_CONTEXT;
+    const uint32_t saved_esp = m.cpu().gpr[zhelezo::ESP];
+    // Reserve record + context on the guest stack; run handlers below them.
+    const uint32_t rec = (saved_esp - EXC_RECORD_SIZE) & ~0xFu;
+    const uint32_t ctx = (rec - CONTEXT_SIZE) & ~0xFu;
+    if (ctx < 0x2000 || saved_esp >= m.mem_size()) // sanity: stack sane?
+        throw runtime::MachineError{"SEH dispatch: stack pointer out of range"};
 
     // EXCEPTION_RECORD { code, flags, *nested, address, nparams, info[15] }.
     m.write32(rec + 0, code);
@@ -39,20 +82,40 @@ bool dispatch_seh(Machine& m, uint32_t code, uint32_t flags, uint32_t except_add
     m.write32(rec + 16, n);
     for (uint32_t i = 0; i < n; i++)
         m.write32(rec + 20 + 4 * i, params_ptr ? m.read32(params_ptr + 4 * i) : 0);
+    write_context(m, ctx, except_addr);
 
+    // Handlers push below the reserved region; restore ESP when done.
+    m.cpu().gpr[zhelezo::ESP] = ctx - 0x20;
+
+    const uint32_t stack_base = m.tib_addr(); // records live below the TIB/stack top
     uint32_t node = m.read32(m.cpu().fs_base); // fs:[0] = ExceptionList head
-    while (node != Machine::SEH_CHAIN_END && node != 0) {
+    uint32_t prev = 0; // enforce strictly increasing addresses (no cycles)
+    bool handled = false;
+    for (unsigned steps = 0; node != Machine::SEH_CHAIN_END && node != 0; steps++) {
+        // Validate: in bounds, aligned, room for the record, strictly above the
+        // previous frame. A bad chain is corruption — stop rather than spin.
+        if (steps > 4096 || node <= prev || (node & 3) || node + 8 > stack_base ||
+            node + 8 > m.mem_size())
+            break;
+        prev = node;
         uint32_t handler = m.read32(node + 4); // record: { *next, handler }
         // cdecl handler(ExceptionRecord*, EstablisherFrame, Context*, Dispatcher).
         uint32_t disp = m.call_guest(handler, {rec, node, ctx, 0});
-        if (disp == ExceptionContinueExecution) return true;
-        if (disp == ExceptionContinueSearch) {
-            node = m.read32(node); // advance to *next
-            continue;
+        if (disp == ExceptionContinueExecution) {
+            if (flags & EXCEPTION_NONCONTINUABLE)
+                throw runtime::MachineError{
+                    "handler continued a noncontinuable exception"};
+            handled = true;
+            break;
         }
-        node = m.read32(node); // nested/collided: keep searching (tier-0)
+        if (disp != ExceptionContinueSearch)
+            throw runtime::MachineError{"invalid SEH disposition " +
+                                        std::to_string(disp)};
+        node = m.read32(node); // advance to *next
     }
-    return false;
+
+    m.cpu().gpr[zhelezo::ESP] = saved_esp;
+    return handled;
 }
 } // namespace
 

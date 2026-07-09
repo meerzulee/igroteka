@@ -107,6 +107,11 @@ uint32_t Machine::drive(uint32_t sentinel_slot, uint64_t step_budget) {
 
 int Machine::run_entry(uint64_t step_budget) {
     if (!loaded_) throw MachineError{"run_entry before load"};
+    // The TIB region [TIB_ADDR, +0x1000) is fixed; a PE whose mapped image
+    // covers it would silently corrupt fs:[0] and the SEH scratch. Reject it
+    // (a real relocation policy comes with the memory-map work).
+    if (image_.base < TIB_ADDR + 0x1000 && image_.base + image_.size > TIB_ADDR)
+        throw MachineError{"image overlaps the TIB region at 0x390000"};
     cpu_ = Cpu{};
     cpu_.eip = image_.entry;
     cpu_.gpr[ESP] = STACK_TOP - 4;
