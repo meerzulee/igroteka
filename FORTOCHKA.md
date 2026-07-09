@@ -28,17 +28,16 @@ worthwhile target in the era we care about: D3D9, big single-threaded sim,
 shipped middleware DLLs, registry use, CD-audio-era sound stack. If Fortochka
 runs RTW, the catalog below it comes nearly free.
 
-**Flagship policy (revised 2026-07-10 after F0):** RTW Gold (the only lawful
-copy that exists — retail was SafeDisc, GOG doesn't carry it) performs a live
-Steam client-presence check and refuses to run without it (`RECON.md`). Its
-exe is unencrypted, so this is not a §1201 wall — but satisfying an ownership
-check in a browser would mean faking steam_api, which our red lines ban. So:
-**RTW is the aspirational/reference target, used only for local extract-only
-recon** (behavior oracle + d3d census with the user's real client running,
-never shipped). **The browser BUILD flagship is a truly DRM-free title** —
-leading candidate Stronghold Crusader (2002, D3D, GOG DRM-free), pending its
-own F0. Everything in the runtime is game-agnostic; the flagship only picks
-which import table we grind. Nothing built so far is lost by this split.
+**Flagship policy (revised 2026-07-11 — GOG DRM-free RTW found):** the
+Steam-version recon below found RTW Gold demands a live Steam client (extract-
+only). BUT **GOG sells "Rome: Total War Collection" DRM-free** (classic RTW +
+Barbarian Invasion + Alexander) — no SafeDisc, no client check, runs fully
+offline. So the GOG `RomeTW.exe` is a **clean, lawful, browser-viable flagship
+with zero circumvention** — RTW is the real target again, not just a reference.
+Retail CD stays out (SafeDisc = §1201). **Re-recon needed on the GOG exe**
+(pescope: confirm no wrapper, no steam_api; likely an optional GOG Galaxy SDK,
+DRM-free) — the earlier import dump was the Steam build. Runtime is game-
+agnostic regardless; GOG RTW just makes RTW itself the achievable goal.
 
 Constraint policy for this document: **we do not plan around what exists; we
 plan around what is buildable.** Boxedwine, Hangover, v86, CheerpX are design

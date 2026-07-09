@@ -7,7 +7,21 @@ one-page RECON.md when done.
 Machine split: runtime dev + corpus build on macOS; everything Wine-related
 on the Linux box (32-bit Wine prefixes are painless there).
 
-## 1. DRM verdict — GATE, do first
+## 0. GOG DRM-free RTW (2026-07-11) — the flagship path
+
+**GOG "Rome: Total War Collection" is DRM-free** (gog.com/game/rome_total_war_collection).
+No SafeDisc, no Steam client check, runs offline standalone. This is the lawful,
+browser-viable flagship. Get it, install, then re-run section 1/2 on the GOG
+`RomeTW.exe` (NOT the Steam build recon'd below):
+
+```sh
+python3 tools/pescope.py "/path/to/GOG/Rome Total War/RomeTW.exe"
+```
+Expect: clean sections (no packer), Direct3DCreate9/8, mss32, wsock32, no
+`steam_api.dll` (maybe an optional Galaxy DLL — DRM-free, safe to stub). If
+clean, RTW is the real target; re-base the import/scope list from this exe.
+
+## 1. DRM verdict — GATE (Steam build; superseded by §0 for GOG)
 
 - [ ] Identify which RTW release you lawfully own (retail CD = SafeDisc = dead
       end; Steam-era "Rome: Total War Collection" / Gold — verify actual DRM
