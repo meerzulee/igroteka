@@ -1,6 +1,7 @@
 #include "d9web/d9web.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -107,15 +108,24 @@ inline float edge(float ax, float ay, float bx, float by, float px, float py) {
 }
 
 // Software-rasterize one screen-space triangle into the backbuffer (barycentric
-// coverage, Gouraud color, no depth/cull — enough for the first geometry).
-void raster_triangle(State& s, const Vtx& a, const Vtx& b, const Vtx& c) {
+// coverage, Gouraud color, no depth/cull). Returns the pixel-test count so the
+// caller can enforce a work budget. Guest floats are fully attacker-controlled:
+// reject non-finite coords and a non-finite 1/area before any float→int cast
+// (which would be UB on NaN/inf/out-of-range), and clamp the bbox AS FLOAT to
+// [0, dim-1] so every cast is of an in-range value.
+uint64_t raster_triangle(State& s, const Vtx& a, const Vtx& b, const Vtx& c) {
+    if (!std::isfinite(a.x) || !std::isfinite(a.y) || !std::isfinite(b.x) ||
+        !std::isfinite(b.y) || !std::isfinite(c.x) || !std::isfinite(c.y))
+        return 0;
     float area = edge(a.x, a.y, b.x, b.y, c.x, c.y);
-    if (area == 0) return;
+    if (area == 0) return 0;
     float inv = 1.0f / area; // sign handles either winding
-    int minx = std::max(0, (int)std::min({a.x, b.x, c.x}));
-    int maxx = std::min((int)s.width - 1, (int)std::max({a.x, b.x, c.x}));
-    int miny = std::max(0, (int)std::min({a.y, b.y, c.y}));
-    int maxy = std::min((int)s.height - 1, (int)std::max({a.y, b.y, c.y}));
+    if (!std::isfinite(inv)) return 0; // near-degenerate: weights would be NaN
+    auto clampf = [](float v, float hi) { return std::clamp(v, 0.0f, hi); };
+    int minx = (int)clampf(std::min({a.x, b.x, c.x}), (float)(s.width - 1));
+    int maxx = (int)clampf(std::max({a.x, b.x, c.x}), (float)(s.width - 1));
+    int miny = (int)clampf(std::min({a.y, b.y, c.y}), (float)(s.height - 1));
+    int maxy = (int)clampf(std::max({a.y, b.y, c.y}), (float)(s.height - 1));
     for (int y = miny; y <= maxy; y++) {
         for (int x = minx; x <= maxx; x++) {
             float px = x + 0.5f, py = y + 0.5f;
@@ -133,7 +143,13 @@ void raster_triangle(State& s, const Vtx& a, const Vtx& b, const Vtx& c) {
                 0xFF000000u | (chan(16) << 16) | (chan(8) << 8) | chan(0);
         }
     }
+    return (uint64_t)(maxx - minx + 1) * (maxy - miny + 1);
 }
+
+// A single DrawPrimitiveUP call may draw at most this many primitives (era
+// MaxPrimitiveCount is ~5.5M) and touch at most this much fill (64 screens),
+// bounding attacker-controlled work regardless of count / triangle size.
+constexpr uint32_t kMaxPrimitives = 4'000'000;
 
 void dev_draw_primitive_up(Machine& m, const Method& mm) {
     // DrawPrimitiveUP(this, PrimitiveType, PrimitiveCount, pVertexData, Stride).
@@ -142,13 +158,19 @@ void dev_draw_primitive_up(Machine& m, const Method& mm) {
         throw MachineError{"DrawPrimitiveUP: only D3DPT_TRIANGLELIST supported"};
     if (g_state.fvf != (0x004 | 0x040) /*XYZRHW|DIFFUSE*/)
         throw MachineError{"DrawPrimitiveUP: only FVF XYZRHW|DIFFUSE supported"};
+    if (count > kMaxPrimitives)
+        throw MachineError{"DrawPrimitiveUP: PrimitiveCount too large"};
     g_state.ensure_bb();
+    const uint64_t fill_budget = 64ull * g_state.width * g_state.height;
+    uint64_t filled = 0;
     auto vtx = [&](uint32_t i) -> Vtx {
         uint32_t p = data + i * stride;
         return {read_f32(m, p + 0), read_f32(m, p + 4), m.read32(p + 16)};
     };
-    for (uint32_t t = 0; t < count; t++)
-        raster_triangle(g_state, vtx(3 * t), vtx(3 * t + 1), vtx(3 * t + 2));
+    for (uint32_t t = 0; t < count; t++) {
+        filled += raster_triangle(g_state, vtx(3 * t), vtx(3 * t + 1), vtx(3 * t + 2));
+        if (filled > fill_budget) break; // bound total attacker-controlled fill
+    }
     m.ret(mm.nargs, 0);
 }
 

@@ -27,6 +27,7 @@ CASES = [
     ("paint.exe", "window_test", ["--paint"], 0, "guest GDI reached"),  # WM_PAINT→fb
     ("d3dclear.exe", "window_test", ["--d3d", "--corner", "336699"], 0, "reached the backbuffer"),
     ("tri.exe", "window_test", ["--d3d", "--tri"], 0, "reached the backbuffer"),  # rasterized triangle
+    ("tri_evil.exe", "window_test", ["--d3d", "--corner", "123456"], 0, "reached the backbuffer"),  # NaN vertex skipped, no UB
 ]
 
 
