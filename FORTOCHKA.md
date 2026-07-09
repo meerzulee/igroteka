@@ -240,8 +240,11 @@ re-based on it.
       precise faults, hostcall seam, 14/14 asm corpus tests green under
       ASan/UBSan. **Decode cache** added (memcmp-validated, SMC-safe): 57→78
       MIPS on decode-heavy code (1.35x), ~1.1x on trivial loops — above the
-      50-MIPS budget. Still missing: x87, SSE1. Corpus driver: `tests/run.py`
-      (MinGW as → flat bin → assert); `--no-cache` for A/B.
+      50-MIPS budget. **x87 FPU** LIVE (f64 stack, load/store/arith/compare/
+      transcendental/control subset; `used` determinism flag): `fpu_arith.s`,
+      `fpu_cmp.s`, corpus `fpu.exe` (real float PE → 42) pass. Still missing:
+      SSE1 (RTW uses a little). Corpus driver: `tests/run.py` (MinGW as → flat
+      bin → assert); `--no-cache` for A/B.
 - [~] `peload`: map sections, apply relocs, bind imports to host thunk table,
       run TLS callbacks — LIVE (`fortochka/peload/`): PE32 map at preferred
       base, HIGHLOW relocs, IAT→hostcall-slot binding, TLS callbacks surfaced
