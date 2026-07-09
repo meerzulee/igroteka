@@ -6,5 +6,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_subdirectory(zhelezo)
 add_subdirectory(peload)
-add_subdirectory(k32web)
 add_subdirectory(runtime)
+add_subdirectory(k32web)
+add_subdirectory(u32web)

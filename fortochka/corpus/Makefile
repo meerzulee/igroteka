@@ -4,10 +4,10 @@
 CC      := i686-w64-mingw32-gcc
 CFLAGS  := -Os -ffreestanding -fno-asynchronous-unwind-tables -fno-ident
 LDFLAGS := -nostdlib -Wl,--entry=_start -Wl,--subsystem,console \
-           -Wl,--image-base=0x400000 -lkernel32
+           -Wl,--image-base=0x400000 -lkernel32 -luser32
 
 BIN := bin
-RUNGS := $(BIN)/hello.exe
+RUNGS := $(BIN)/hello.exe $(BIN)/window.exe
 
 all: $(RUNGS)
 
