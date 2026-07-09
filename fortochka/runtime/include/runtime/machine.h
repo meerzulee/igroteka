@@ -71,18 +71,26 @@ class Machine {
     static constexpr uint32_t SEH_CHAIN_END = 0xFFFFFFFFu;
 
     // --- guest heap + COM support ---
-    // Bump-allocate `size` bytes (8-aligned) of guest memory from the runtime
-    // heap region; returns the guest VA. For HLE-owned objects (COM interfaces,
-    // vtables) the guest never frees.
+    // Guest heap region base (runtime-owned, below the image); a future
+    // k32web VirtualAlloc must avoid [HEAP_BASE, heap watermark).
+    static constexpr uint32_t HEAP_BASE = 0x02000000;
+
+    // Bump-allocate `size` bytes (8-aligned) of guest memory; returns the guest
+    // VA. HLE-owned allocations (COM vtables/objects) are never freed — see the
+    // no-free debt note by the members below; a real free path lands with the
+    // resource-HLE work (F3).
     uint32_t alloc(uint32_t size);
 
-    // Build a COM object: an [vtable_ptr, refcount, ...state] blob plus a vtable
-    // of `num_methods` hostcall thunks. Every method i, when the guest calls it,
-    // invokes `handler(*this, method_index)` with the object as arg(0) (COM's
-    // `this`), letting the HLE module dispatch by index. Returns the object VA.
+    // COM: one vtable per interface CLASS, shared by all its instances (real COM
+    // semantics; the handler gets object identity via arg(0), so per-object
+    // vtables would only waste hostcall slots). create_com_vtable allocates the
+    // vtable + `num_methods` hostcall thunks once and returns its guest VA;
+    // calling thunk i dispatches `handler(*this, i)` with the object as arg(0)
+    // (COM's `this`). create_com_instance makes an object: [vtable_ptr, state...]
+    // with `state_bytes` zeroed.
     using ComHandler = std::function<void(Machine&, unsigned method)>;
-    uint32_t create_com_object(unsigned num_methods, uint32_t state_bytes,
-                               ComHandler handler);
+    uint32_t create_com_vtable(unsigned num_methods, ComHandler handler);
+    uint32_t create_com_instance(uint32_t vtable, uint32_t state_bytes);
 
     bool exited = false;
     uint32_t exit_code = 0;
@@ -115,14 +123,17 @@ class Machine {
     peload::Image image_;
     bool loaded_ = false;
 
-    // Guest heap bump pointer (runtime-owned region below the image base) and
-    // the COM vtable-thunk registry: slot -> (handler, method index).
-    uint32_t heap_next_ = 0;
+    // Guest heap bump pointer (never decremented — HLE allocations are immortal
+    // until the resource-HLE free path lands in F3) and the COM vtable-thunk
+    // registry: hostcall slot -> (handler, method index). A slot is either an
+    // import or a COM thunk, never both (the ranges are disjoint: next_slot_ is
+    // monotonic and slots_ is sized at load).
+    uint32_t heap_next_ = HEAP_BASE;
     struct ComSlot {
         ComHandler handler;
         unsigned method;
     };
-    std::vector<ComSlot> com_slots_; // parallel to slots_, indexed by hostcall slot
+    std::vector<ComSlot> com_slots_; // indexed by hostcall slot
 };
 
 struct MachineError {

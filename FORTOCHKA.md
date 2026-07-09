@@ -309,8 +309,15 @@ plus the SEH/`seh.exe` item below, remain for F2/F3 proper.
 
 ### Phase F3 — Pixels (target: 6–10 weeks, parallel with F2 after F1)
 
-- [ ] `d9web` frontend on the d8web seam: device, swapchain, resources,
-      state tracker, sampler split, vertex declarations
+- [~] `d9web` frontend on the d8web seam: device, swapchain, resources,
+      state tracker, sampler split, vertex declarations — STARTED
+      (`fortochka/d9web/`). **COM infrastructure** in Machine
+      (`create_com_object` = guest object + vtable-thunk dispatch by method
+      index, `alloc` guest heap). Direct3DCreate9 → IDirect3D9::CreateDevice →
+      IDirect3DDevice9::Clear/Present into a software backbuffer; corpus
+      `d3dclear.exe` (real D3D9 COM) clears to a color and renders to a browser
+      canvas (screenshot-verified). Next: DrawPrimitiveUP + triangle, then the
+      backend seam (WebGL) and resources (VB/IB/textures).
 - [ ] Caps persona (Radeon 9700), CheckDeviceFormat table
 - [ ] FFP path: port/extend the d8web synthesizer to D3D9 stage semantics
 - [ ] Shader translator: vs_1_1 → GLSL ES first, then ps_1_1–ps_1_4, then

@@ -16,16 +16,12 @@ constexpr uint32_t STACK_TOP = 0x00380000; // below the 0x400000 image base
 // (see machine.h TIB_SCRATCH_*). Empty chain sentinel is 0xFFFFFFFF (MSVC).
 constexpr uint32_t TIB_ADDR = 0x00390000;
 constexpr uint32_t SEH_END = 0xFFFFFFFFu;
-// Runtime-owned guest heap for HLE objects (COM interfaces, vtables). Above any
-// reasonable image, well inside the default 64 MB arena.
-constexpr uint32_t HEAP_BASE = 0x02000000;
 } // namespace
 
 uint32_t Machine::tib_addr() const { return TIB_ADDR; }
 
 uint32_t Machine::alloc(uint32_t size) {
     size = (size + 7) & ~7u; // 8-align
-    if (heap_next_ == 0) heap_next_ = HEAP_BASE;
     uint32_t va = heap_next_;
     if ((uint64_t)va + size > arena_.size())
         throw MachineError{"guest heap exhausted"};
@@ -33,9 +29,7 @@ uint32_t Machine::alloc(uint32_t size) {
     return va;
 }
 
-uint32_t Machine::create_com_object(unsigned num_methods, uint32_t state_bytes,
-                                    ComHandler handler) {
-    uint32_t obj = alloc(4 + state_bytes);         // [vtable_ptr, state...]
+uint32_t Machine::create_com_vtable(unsigned num_methods, ComHandler handler) {
     uint32_t vtbl = alloc(num_methods * 4);
     for (unsigned i = 0; i < num_methods; i++) {
         uint32_t slot = next_slot_++;
@@ -43,7 +37,12 @@ uint32_t Machine::create_com_object(unsigned num_methods, uint32_t state_bytes,
         com_slots_[slot] = {handler, i};
         write32(vtbl + 4 * i, hostcall_addr(slot)); // vtable[i] = thunk
     }
-    write32(obj, vtbl); // object's first dword is the vtable pointer
+    return vtbl;
+}
+
+uint32_t Machine::create_com_instance(uint32_t vtable, uint32_t state_bytes) {
+    uint32_t obj = alloc(4 + state_bytes); // [vtable_ptr, state...]
+    write32(obj, vtable);
     for (uint32_t i = 0; i < state_bytes; i += 4) write32(obj + 4 + i, 0);
     return obj;
 }
