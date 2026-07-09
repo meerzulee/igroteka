@@ -316,8 +316,11 @@ plus the SEH/`seh.exe` item below, remain for F2/F3 proper.
       index, `alloc` guest heap). Direct3DCreate9 → IDirect3D9::CreateDevice →
       IDirect3DDevice9::Clear/Present into a software backbuffer; corpus
       `d3dclear.exe` (real D3D9 COM) clears to a color and renders to a browser
-      canvas (screenshot-verified). Next: DrawPrimitiveUP + triangle, then the
-      backend seam (WebGL) and resources (VB/IB/textures).
+      canvas (screenshot-verified). **Triangle MET:** SetFVF + DrawPrimitiveUP
+      (XYZRHW|DIFFUSE) → barycentric Gouraud software rasterizer → the canonical
+      RGB triangle in a browser tab (`tri.exe`, screenshot). Method-table design
+      (Fable-reviewed): each new device method is one row. Next: VB/IB/texture
+      resources, the FFP transform path (non-pretransformed XYZ), WebGL backend.
 - [ ] Caps persona (Radeon 9700), CheckDeviceFormat table
 - [ ] FFP path: port/extend the d8web synthesizer to D3D9 stage semantics
 - [ ] Shader translator: vs_1_1 → GLSL ES first, then ps_1_1–ps_1_4, then
