@@ -167,14 +167,17 @@ inline float edge(float ax, float ay, float bx, float by, float px, float py) {
     return (px - ax) * (by - ay) - (py - ay) * (bx - ax);
 }
 
-// Nearest-neighbour texel from a bound texture (A8R8G8B8), UV wrapped.
+// Nearest-neighbour texel from a bound texture (A8R8G8B8), UV wrapped. Wraps in
+// FLOAT first (u - floor(u) ∈ [0,1)) so the texel-index cast is always in range
+// — a huge finite guest UV would otherwise make (int)(u*tw) out-of-range UB.
 inline uint32_t sample_tex(Machine& m, uint32_t tex, float u, float v) {
     int tw = (int)m.read32(tex + TEX_W), th = (int)m.read32(tex + TEX_H);
     if (tw <= 0 || th <= 0) return 0xFFFFFFFFu;
     if (!std::isfinite(u) || !std::isfinite(v)) return 0xFFFFFFFFu;
-    int tx = ((int)std::floor(u * tw)) % tw, ty = ((int)std::floor(v * th)) % th;
-    if (tx < 0) tx += tw;
-    if (ty < 0) ty += th;
+    float fu = u - std::floor(u), fv = v - std::floor(v); // wrap to [0,1)
+    int tx = (int)(fu * tw), ty = (int)(fv * th);         // now in [0,dim)
+    if (tx >= tw) tx = tw - 1; // guard the [0,1) upper-edge rounding
+    if (ty >= th) ty = th - 1;
     return m.read32(m.read32(tex + TEX_BACKING) + ((size_t)ty * tw + tx) * 4);
 }
 
@@ -269,10 +272,12 @@ Vtx vertex_screen(Machine& m, uint32_t p, const float* wvp) {
 template <typename Vaddr>
 void draw_core(Machine& m, uint32_t count, Vaddr vaddr) {
     const uint32_t fvf = g_state.fvf;
-    // Position required; DIFFUSE + TEX1 optional. Other components (normals,
-    // > stream-0, extra tex coords) aren't in the layout — throw named, add on
-    // demand (stub-log-driven). Runs BEFORE any vertex_screen parse.
-    bool ok = (fvf & (FVF_XYZ | FVF_XYZRHW)) &&
+    // Position required, exactly one of XYZ / XYZRHW (mutually exclusive);
+    // DIFFUSE + TEX1 optional. Other components (normals, > stream-0, extra tex
+    // coords) aren't in the layout — throw named, add on demand. Runs BEFORE any
+    // vertex_screen parse, so an unsupported FVF never reaches the parser.
+    bool has_xyz = fvf & FVF_XYZ, has_rhw = fvf & FVF_XYZRHW;
+    bool ok = (has_xyz != has_rhw) &&
               !(fvf & ~(FVF_XYZ | FVF_XYZRHW | FVF_DIFFUSE | FVF_TEX1));
     if (!ok)
         throw MachineError{"draw: unsupported FVF 0x" + std::to_string(fvf)};

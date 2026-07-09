@@ -33,6 +33,7 @@ CASES = [
     ("fftri.exe", "window_test", ["--d3d", "--tri"], 0, "reached the backbuffer"),  # FFP WVP transform
     ("tex.exe", "window_test", ["--d3d", "--tri"], 0, "reached the backbuffer"),  # textured quad
     ("itri.exe", "window_test", ["--d3d", "--tri"], 0, "reached the backbuffer"),  # indexed draw
+    ("tex_evil.exe", "window_test", ["--d3d", "--tri"], 0, "reached the backbuffer"),  # huge UV, no UB
 ]
 
 
