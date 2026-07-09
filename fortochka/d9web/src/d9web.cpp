@@ -48,9 +48,9 @@ struct State {
     std::vector<uint32_t> backbuffer; // ARGB 0xFFRRGGBB, width*height
     bool presented = false;
     uint32_t fvf = 0; // current SetFVF
-    // Bound stream 0 (SetStreamSource): the vertex-buffer COM object, byte
-    // offset into it, and vertex stride.
-    uint32_t stream_vb = 0, stream_offset = 0, stream_stride = 0;
+    // Bound stream 0 (SetStreamSource) + index buffer (SetIndices): the COM
+    // objects, byte offset into the stream, and vertex stride.
+    uint32_t stream_vb = 0, stream_offset = 0, stream_stride = 0, stream_ib = 0;
     // Fixed-function transform state (SetTransform / SetViewport). Untransformed
     // XYZ vertices go through World*View*Projection then the viewport map.
     float world[16], view[16], proj[16];
@@ -71,9 +71,10 @@ struct State {
 State g_state;
 
 // Vertex-buffer object state (past the vtable ptr at +0): refcount, the backing
-// store's guest VA, and its length in bytes.
-constexpr uint32_t VB_REFCOUNT = 4, VB_BACKING = 8, VB_LENGTH = 12;
-constexpr uint32_t VB_STATE_BYTES = 12;
+// store's guest VA, and its length in bytes. Index buffers reuse this layout
+// (same COM shape) plus one dword for the index format.
+constexpr uint32_t VB_REFCOUNT = 4, VB_BACKING = 8, VB_LENGTH = 12, IB_FORMAT = 16;
+constexpr uint32_t VB_STATE_BYTES = 12, IB_STATE_BYTES = 16;
 
 // Read a guest float (IEEE-754 bits).
 inline float read_f32(Machine& m, uint32_t va) {
@@ -261,15 +262,16 @@ Vtx vertex_screen(Machine& m, uint32_t p, const float* wvp) {
     return {sx, sy, col, u, vv};
 }
 
-// Rasterize `count` triangles whose vertex j lives at base + (start+j)*stride.
-// Shared by DrawPrimitiveUP (base=user pointer) and DrawPrimitive (base=bound
-// vertex buffer). Enforces the primitive cap and the fill budget.
-void draw_tris(Machine& m, uint32_t count, uint32_t base, uint32_t start,
-               uint32_t stride) {
+// Rasterize `count` triangles. `vaddr(j)` returns the guest address of the j-th
+// vertex (j in 0..3*count-1) — a linear stream for DrawPrimitive[UP], or an
+// index lookup for DrawIndexedPrimitive. Validates the FVF, computes WVP once,
+// and enforces the primitive cap + fill budget.
+template <typename Vaddr>
+void draw_core(Machine& m, uint32_t count, Vaddr vaddr) {
     const uint32_t fvf = g_state.fvf;
     // Position required; DIFFUSE + TEX1 optional. Other components (normals,
     // > stream-0, extra tex coords) aren't in the layout — throw named, add on
-    // demand (stub-log-driven).
+    // demand (stub-log-driven). Runs BEFORE any vertex_screen parse.
     bool ok = (fvf & (FVF_XYZ | FVF_XYZRHW)) &&
               !(fvf & ~(FVF_XYZ | FVF_XYZRHW | FVF_DIFFUSE | FVF_TEX1));
     if (!ok)
@@ -283,11 +285,11 @@ void draw_tris(Machine& m, uint32_t count, uint32_t base, uint32_t start,
     const uint32_t tex = (fvf & FVF_TEX1) ? g_state.tex_stage0 : 0;
     const uint64_t fill_budget = 64ull * g_state.width * g_state.height;
     uint64_t filled = 0;
-    auto va = [&](uint32_t j) { return base + (start + j) * stride; };
     for (uint32_t t = 0; t < count; t++) {
-        filled += raster_triangle(m, g_state, tex, vertex_screen(m, va(3 * t), wvp),
-                                  vertex_screen(m, va(3 * t + 1), wvp),
-                                  vertex_screen(m, va(3 * t + 2), wvp));
+        filled += raster_triangle(m, g_state, tex,
+                                  vertex_screen(m, vaddr(3 * t), wvp),
+                                  vertex_screen(m, vaddr(3 * t + 1), wvp),
+                                  vertex_screen(m, vaddr(3 * t + 2), wvp));
         if (filled > fill_budget) break; // bound total attacker-controlled fill
     }
 }
@@ -296,7 +298,8 @@ void dev_draw_primitive_up(Machine& m, const Method& mm) {
     // DrawPrimitiveUP(this, PrimitiveType, PrimitiveCount, pVertexData, Stride).
     if (m.arg(1) != 4 /*D3DPT_TRIANGLELIST*/)
         throw MachineError{"DrawPrimitiveUP: only D3DPT_TRIANGLELIST supported"};
-    draw_tris(m, m.arg(2), m.arg(3) /*data*/, 0, m.arg(4) /*stride*/);
+    uint32_t data = m.arg(3), stride = m.arg(4);
+    draw_core(m, m.arg(2), [=](uint32_t j) { return data + j * stride; });
     m.ret(mm.nargs, 0);
 }
 void dev_draw_primitive(Machine& m, const Method& mm) {
@@ -306,9 +309,30 @@ void dev_draw_primitive(Machine& m, const Method& mm) {
         throw MachineError{"DrawPrimitive: only D3DPT_TRIANGLELIST supported"};
     if (!g_state.stream_vb)
         throw MachineError{"DrawPrimitive: no vertex buffer bound"};
-    uint32_t backing = m.read32(g_state.stream_vb + VB_BACKING);
-    draw_tris(m, m.arg(3) /*count*/, backing + g_state.stream_offset,
-              m.arg(2) /*StartVertex*/, g_state.stream_stride);
+    uint32_t base = m.read32(g_state.stream_vb + VB_BACKING) + g_state.stream_offset;
+    uint32_t start = m.arg(2), stride = g_state.stream_stride;
+    draw_core(m, m.arg(3), [=](uint32_t j) { return base + (start + j) * stride; });
+    m.ret(mm.nargs, 0);
+}
+void dev_draw_indexed_primitive(Machine& m, const Method& mm) {
+    // DrawIndexedPrimitive(this, PrimType, BaseVertexIndex, MinIndex,
+    //   NumVertices, StartIndex, PrimitiveCount). Vertices come from the bound
+    //   stream, indexed through the bound index buffer.
+    if (m.arg(1) != 4 /*D3DPT_TRIANGLELIST*/)
+        throw MachineError{"DrawIndexedPrimitive: only D3DPT_TRIANGLELIST supported"};
+    if (!g_state.stream_vb || !g_state.stream_ib)
+        throw MachineError{"DrawIndexedPrimitive: no vertex/index buffer bound"};
+    uint32_t vb_base = m.read32(g_state.stream_vb + VB_BACKING) + g_state.stream_offset;
+    uint32_t ib_base = m.read32(g_state.stream_ib + VB_BACKING);
+    uint32_t isz = m.read32(g_state.stream_ib + IB_FORMAT) == 101 /*INDEX16*/ ? 2 : 4;
+    int32_t base_vertex = (int32_t)m.arg(2);
+    uint32_t start_index = m.arg(5), stride = g_state.stream_stride;
+    auto vaddr = [&](uint32_t j) {
+        uint32_t ia = ib_base + (start_index + j) * isz;
+        uint32_t idx = isz == 2 ? (m.read32(ia) & 0xFFFF) : m.read32(ia);
+        return vb_base + (uint32_t)(base_vertex + (int32_t)idx) * stride;
+    };
+    draw_core(m, m.arg(6), vaddr);
     m.ret(mm.nargs, 0);
 }
 void dev_set_stream_source(Machine& m, const Method& mm) {
@@ -316,6 +340,10 @@ void dev_set_stream_source(Machine& m, const Method& mm) {
     g_state.stream_vb = m.arg(2);
     g_state.stream_offset = m.arg(3);
     g_state.stream_stride = m.arg(4);
+    m.ret(mm.nargs, 0);
+}
+void dev_set_indices(Machine& m, const Method& mm) {
+    g_state.stream_ib = m.arg(1); // SetIndices(this, pIndexData)
     m.ret(mm.nargs, 0);
 }
 void dev_create_vertex_buffer(Machine& m, const Method& mm) {
@@ -327,6 +355,20 @@ void dev_create_vertex_buffer(Machine& m, const Method& mm) {
     m.write32(vb + VB_BACKING, backing);
     m.write32(vb + VB_LENGTH, length);
     m.write32(ppVB, vb);
+    m.ret(mm.nargs, 0);
+}
+void dev_create_index_buffer(Machine& m, const Method& mm) {
+    // CreateIndexBuffer(this, Length, Usage, Format, Pool, ppIB, pSharedHandle).
+    // Index buffers share the vertex-buffer vtable (identical IUnknown+resource+
+    // Lock/Unlock shape); the extra dword is the index format (D3DFMT_INDEX16/32).
+    uint32_t length = m.arg(1), fmt = m.arg(3), ppIB = m.arg(5);
+    uint32_t backing = m.alloc(length ? length : 4);
+    uint32_t ib = m.create_com_instance(g_state.vbuffer_vtbl, IB_STATE_BYTES);
+    m.write32(ib + VB_REFCOUNT, 1);
+    m.write32(ib + VB_BACKING, backing);
+    m.write32(ib + VB_LENGTH, length);
+    m.write32(ib + IB_FORMAT, fmt);
+    m.write32(ppIB, ib);
     m.ret(mm.nargs, 0);
 }
 void vb_lock(Machine& m, const Method& mm) {
@@ -393,7 +435,7 @@ constexpr Method kDeviceVtbl[] = {
     {"GetGammaRamp", 0, nullptr}, {"CreateTexture", 9, dev_create_texture},
     {"CreateVolumeTexture", 0, nullptr}, {"CreateCubeTexture", 0, nullptr},
     {"CreateVertexBuffer", 7, dev_create_vertex_buffer},
-    {"CreateIndexBuffer", 0, nullptr},
+    {"CreateIndexBuffer", 7, dev_create_index_buffer},
     {"CreateRenderTarget", 0, nullptr}, {"CreateDepthStencilSurface", 0, nullptr},
     {"UpdateSurface", 0, nullptr}, {"UpdateTexture", 0, nullptr},
     {"GetRenderTargetData", 0, nullptr}, {"GetFrontBufferData", 0, nullptr},
@@ -421,7 +463,8 @@ constexpr Method kDeviceVtbl[] = {
     {"GetScissorRect", 0, nullptr}, {"SetSoftwareVertexProcessing", 0, nullptr},
     {"GetSoftwareVertexProcessing", 0, nullptr}, {"SetNPatchMode", 0, nullptr},
     {"GetNPatchMode", 0, nullptr}, {"DrawPrimitive", 4, dev_draw_primitive},
-    {"DrawIndexedPrimitive", 0, nullptr}, {"DrawPrimitiveUP", 5, dev_draw_primitive_up},
+    {"DrawIndexedPrimitive", 7, dev_draw_indexed_primitive},
+    {"DrawPrimitiveUP", 5, dev_draw_primitive_up},
     {"DrawIndexedPrimitiveUP", 0, nullptr}, {"ProcessVertices", 0, nullptr},
     {"CreateVertexDeclaration", 0, nullptr}, {"SetVertexDeclaration", 0, nullptr},
     {"GetVertexDeclaration", 0, nullptr}, {"SetFVF", 2, dev_set_fvf},
@@ -432,7 +475,7 @@ constexpr Method kDeviceVtbl[] = {
     {"SetVertexShaderConstantB", 0, nullptr}, {"GetVertexShaderConstantB", 0, nullptr},
     {"SetStreamSource", 5, dev_set_stream_source}, {"GetStreamSource", 0, nullptr},
     {"SetStreamSourceFreq", 0, nullptr}, {"GetStreamSourceFreq", 0, nullptr},
-    {"SetIndices", 0, nullptr}, {"GetIndices", 0, nullptr},
+    {"SetIndices", 2, dev_set_indices}, {"GetIndices", 0, nullptr},
     {"CreatePixelShader", 0, nullptr}, {"SetPixelShader", 0, nullptr},
     {"GetPixelShader", 0, nullptr}, {"SetPixelShaderConstantF", 0, nullptr},
     {"GetPixelShaderConstantF", 0, nullptr}, {"SetPixelShaderConstantI", 0, nullptr},
