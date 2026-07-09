@@ -29,8 +29,18 @@ export class LobbyRoom extends DurableObject {
     const id = crypto.randomUUID().slice(0, 8);
     const host = this.ctx.getWebSockets().length === 0; // first in = host
 
+    // Stable per-connection slot (1-based, lowest free). The engine derives its
+    // synthetic IP 10.0.0.<slot> from this. Server-assigned + stable (not a client
+    // sort that reshuffles as peers join), so a peer's IP never changes and every
+    // client agrees — the routable-identity invariant the transport relies on.
+    const usedSlots = new Set(
+      this.ctx.getWebSockets().map((s) => (s.deserializeAttachment() || {}).slot).filter(Boolean)
+    );
+    let slot = 1;
+    while (usedSlots.has(slot)) slot++;
+
     this.ctx.acceptWebSocket(server);
-    server.serializeAttachment({ id, name, host, ready: false });
+    server.serializeAttachment({ id, name, host, ready: false, slot });
 
     server.send(
       JSON.stringify({
@@ -136,7 +146,7 @@ export class LobbyRoom extends DurableObject {
       .filter((s) => s !== except)
       .map((s) => s.deserializeAttachment())
       .filter(Boolean)
-      .map(({ id, name, host, ready }) => ({ id, name, host, ready }));
+      .map(({ id, name, host, ready, slot }) => ({ id, name, host, ready, slot }));
   }
 
   broadcastRoster(except) {

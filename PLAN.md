@@ -3,6 +3,10 @@
 Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 Update this file when an exit criterion is met. Last updated: 2026-07-05 (project start).
 
+> This file is **Track 1** (Dvijoke — engine-source ports). Track 2 — sourceless
+> games via a from-scratch Win32-on-wasm runtime, flagship Rome: Total War —
+> lives in [FORTOCHKA.md](FORTOCHKA.md).
+
 ---
 
 ## Phase 0 — Headless sim in the browser (target: 3–6 weeks)
@@ -25,6 +29,29 @@ graphics code. This kills ~90% of unknown project risk.
 
 **Exit criterion:** browser console shows a skirmish map loaded, AI-vs-AI sim ticks
 advancing, and N-tick checksum identical to the native run.
+
+**2026-07-09 findings — the determinism harness is mostly pre-built upstream.**
+The SuperHackers fork already ships a headless replay-CRC validator we can reuse
+instead of writing one:
+- `ReplaySimulation::simulateReplays` (`Core/GameEngine/Source/Common/ReplaySimulation.cpp`)
+  — `-replay <file> -headless` boots straight into it via `GameMain.cpp:48`, loops
+  `GameLogic::UPDATE()` while `isPlaybackInProgress()`, and returns a nonzero **exit code
+  on `sawCRCMismatch()`**. That exit code IS the determinism verdict.
+- The CRC compute+emit (`GameLogic::getCRC(CRC_RECALC)` → `MSG_LOGIC_CRC`, `GameLogic.cpp:3860`)
+  and mismatch plumbing (`Network::sawCRCMismatch`) are **production code, not DEBUG_CRC-gated**
+  — they run in the current Release `wasm` build. `DEBUG_CRC` (auto-on with `RTS_DEBUG_LOGGING`)
+  is only needed to *localize* which tick diverges, via per-frame CRC logs.
+- Float divergence (the "existential" risk below) is already mitigated: `cmake/gamemath.cmake`
+  sets `SAGE_USE_DETERMINISTIC_MATH=ON` (fdlibm) for cross-platform replay validation.
+- `DETERMINISTIC` build flag (`RandomValue.cpp:100`) force-seeds RNG=0, but replays don't
+  need it — a replay stores + replays its own seed. Re-running a *fresh* skirmish twice would
+  diverge on the wall-clock seed, so REPLAY (not re-run) is the correct harness.
+
+Corrected critical path: (1) get skirmish-vs-AI to START + TICK in WASM (HANDOFF's "next big
+test" — the real gate); (2) play it once → auto-records `LastReplay.rep`; (3) run
+`-replay LastReplay.rep -headless` in a **Web Worker or Node** (needs no WebGL2, blocking OK)
+→ read exit code; (4) if mismatch, build a `wasm-crc` logging variant to find the diverging tick.
+Milestones 1a/1b (shell map + menu, below) are DONE per HANDOFF — status not yet ticked there.
 
 Known risks here:
 - 32/64-bit assumptions — wasm32 pointers match the engine's 32-bit heritage (helps),
@@ -120,9 +147,42 @@ skirmish in under 10 minutes, no docs.
       DataChannel; desync detection via the Phase 0 checksum harness
 - [ ] Lobby web UI: create/join room, map picker, army picker, chat
 - [ ] Latency tuning: command turn length vs RTT; spectator-safe pause on drop
+- [ ] In-game HUD (top-right): player name (truncate if long, e.g. `verylongname…`)
+      + live ping in ms per peer. Ping source = `Connection::m_averageLatency`
+      (command-ACK RTT) or DataChannel RTT from the bridge. Also fixes the empty
+      ping column in the Disconnection menu (same latency source).
+- [ ] Auto-join / autopilot: boot params (`?host=1` / `?autojoin=1`) drive the
+      engine straight into host/join, skipping the LAN-lobby hunt. Igroteka is the
+      gathering layer (public area + party rooms); "Start" opens every player's tab
+      with the param → straight into the game. (Auto-join built 2026-07-09.)
+- [ ] Mid-game reconnect: deterministic lockstep = `seed + command log`, so a
+      returning player replays the buffered command history to catch up, then
+      rejoins live (same tech as spectate/replay). Depends on the Phase-0
+      determinism gate being green.
 
 **Exit criterion (v1.0):** two browsers on different networks complete a 1v1 skirmish.
 The café moment.
+
+**2026-07-09 seam map (from code exploration + Codex + advisor — all converged):**
+- **Transport swap point = the concrete `UDP` class** (`Core/GameEngine/Source/GameNetwork/udp.cpp`).
+  Reimplement `Bind`/`Write`/`Read`/`SetBlocking` over a WebRTC DataChannel — everything above
+  (`Transport` CRC/XOR/queues, the whole lockstep system, desync detection) stays byte-for-byte.
+  No virtual transport interface exists (both `UDP` and `Transport` are concrete) → reimplement
+  the UDP body, don't refactor. Inject at `new Transport` (`NAT.cpp:608` / `ConnectionManager.cpp:1603`).
+- **Library:** `datachannel-wasm` (MIT, same `rtc::` API as native libdatachannel). Don't hand-roll
+  EM_JS — buffer lifetime + `bufferedAmount` backpressure + connection state get nasty.
+- **Two impedance mismatches** (the actual shim work): (a) engine demuxes peers by `(uint32 IP,
+  uint16 port)` — map `(addr,port)` ↔ synthetic peer-id; (b) one shared `Transport` serves ALL
+  peers (`ConnectionManager.cpp:2056`) — multiplex N DataChannels behind the one UDP shim.
+- **Barrier is already non-blocking poll-based** (`isFrameDataReady()` gate, `GameEngine.cpp:943`)
+  — maps onto the rAF loop. Init-path blockers to neutralize: 1000ms busy-wait bind
+  (`Transport.cpp:117`), pregame `while(!isProgressComplete()){Sleep(100)}` (`GameLogic.cpp:2310`),
+  blocking `gethostbyname`. Cap `doRecv` drain per tick. DataChannel `onmessage` → append to inbox
+  only, consume at a deterministic point in `Network::liteupdate()` (never mutate sim from callback).
+- **Infra: no self-hosted network needed.** Signaling = CF Worker + Durable Object (write `cafe/`,
+  MIT). STUN+TURN = `turn.cloudflare.com` (TURN $0.05/GB relayed; most traffic pure P2P = $0).
+  Game traffic is browser↔browser P2P, never through our server.
+- **Gated on Phase 0 determinism** (above). `cafe/` signaling is the only piece with zero blockers.
 
 ---
 
