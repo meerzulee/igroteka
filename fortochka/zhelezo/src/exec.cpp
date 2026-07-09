@@ -854,9 +854,11 @@ void execSSE(Cpu& c, const Bus& b, const Inst& in) {
                     case 0x58: return a + s;
                     case 0x59: return a * s;
                     case 0x5C: return a - s;
-                    case 0x5D: return s < a ? s : a;
+                    // MIN/MAX return the SRC operand unless DST strictly wins —
+                    // so NaN and equal (incl -0.0/+0.0) yield src, matching x86.
+                    case 0x5D: return (a < s) ? a : s; // min
                     case 0x5E: return a / s;
-                    default: return s > a ? s : a; // 0x5F max
+                    default: return (a > s) ? a : s;   // 0x5F max
                 }
             };
             float* d = xf(c, dst);
@@ -905,17 +907,22 @@ void execSSE(Cpu& c, const Bus& b, const Inst& in) {
         }
         case 0x2C:   // cvttss2si — truncate
         case 0x2D: { // cvtss2si  — round (nearest); dest = r32
-            float s = load_ss();
-            c.gpr[dst] = (uint32_t)(int32_t)(op == 0x2C ? std::trunc(s)
-                                                        : std::nearbyint(s));
+            double v = (double)load_ss();
+            double r = op == 0x2C ? std::trunc(v) : std::nearbyint(v);
+            // Out-of-range / NaN yields the integer indefinite (0x80000000);
+            // a plain C++ cast there would be UB.
+            uint32_t out =
+                (std::isnan(r) || r < -2147483648.0 || r > 2147483647.0)
+                    ? 0x80000000u
+                    : (uint32_t)(int32_t)r;
+            c.gpr[dst] = out;
             return;
         }
         case 0x50: { // movmskps: sign bits of 4 floats → r32
             if (mem) throw UdFault{}; // reg-form only
             uint32_t m = 0;
             for (int i = 0; i < 4; i++)
-                if (xf(c, rmreg)[i] < 0 || std::signbit(xf(c, rmreg)[i]))
-                    m |= (1u << i);
+                if (std::signbit(xf(c, rmreg)[i])) m |= (1u << i); // sign bit incl -0
             c.gpr[dst] = m;
             return;
         }
