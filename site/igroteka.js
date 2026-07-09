@@ -5,7 +5,7 @@
 // page cache-busts engine fetches with ENGINE_BUILD (bump it whenever new
 // GeneralsXZH.js/.wasm binaries are staged, or browsers replay the old ones).
 export const SITE_VERSION = '0.1.0';
-export const ENGINE_BUILD = 24;
+export const ENGINE_BUILD = 25;
 
 export const ZH_MANIFEST = {
   // Zero Hour expansion archives (from the ZH install dir)

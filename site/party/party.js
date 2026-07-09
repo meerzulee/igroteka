@@ -178,6 +178,7 @@
   // Same room WS the game itself uses; here it only carries roster/chat/kick/
   // start. It closes when we navigate into the game, which reopens it there.
   var ws = null, myId = null, iAmHost = false, launching = false, kicked = false;
+  var lastRoster = [];
 
   function sysLine(text) {
     var li = document.createElement("li");
@@ -238,6 +239,15 @@
       }
       el.roster.appendChild(li);
     });
+    // Guests: reflect whether the host is present. Host role is token-bound —
+    // if the host leaves, nobody is promoted (they rejoin as host with their
+    // stored token), so the party just waits.
+    if (!iAmHost) {
+      var hostHere = players.some(function (p) { return p.host; });
+      el.waitMsg.textContent = hostHere
+        ? "waiting for the host to start…"
+        : "the host left — waiting for them to return…";
+    }
   }
 
   function send(obj) {
@@ -277,6 +287,7 @@
           sysLine("connected — room " + code);
           break;
         case "roster":
+          lastRoster = m.players;
           renderRoster(m.players);
           break;
         case "chat":
@@ -334,7 +345,29 @@
     if (e.key === "Enter") { e.preventDefault(); el.chatSend.onclick(); }
   });
   el.readyBox.onchange = function () { send({ t: "ready", ready: el.readyBox.checked }); };
-  el.startGame.onclick = function () { send({ t: "start" }); };
+  // Soft ready-gate: everyone ready -> start instantly; someone not ready ->
+  // XP confirm naming them. Not a hard block — the engine's own Game Options
+  // lobby still has its accept step, and an AFK friend shouldn't brick the
+  // party (that's what Kick is for).
+  el.startGame.onclick = function () {
+    // Only guests ready-up; a host (or a stray host session) never counts.
+    var notReady = lastRoster.filter(function (p) {
+      return p.id !== myId && !p.host && !p.ready;
+    });
+    if (!notReady.length) return send({ t: "start" });
+    var d = XpDialog.warn(
+      "Not everyone is ready yet:<br><b></b><br><br>Start the game anyway?",
+      {
+        title: "Start Game", id: "start-confirm",
+        buttons: [
+          { label: "Wait", default: true },
+          { label: "Start anyway", onclick: function () { send({ t: "start" }); } },
+        ],
+      });
+    // names via textContent — never trust player input
+    d.el.querySelector(".xpdlg-msg b").textContent =
+      notReady.map(function (p) { return p.name; }).join(", ");
+  };
   el.leaveLobby.onclick = function (e) { e.preventDefault(); leaveToForms(); };
 
   el.copyCode.onclick = function () {
