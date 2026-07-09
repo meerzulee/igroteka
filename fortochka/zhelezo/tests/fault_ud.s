@@ -1,6 +1,7 @@
-# x87 is out of tier-0 scope for now: must fault precisely at the instruction.
+# An architecturally-undefined opcode must fault precisely at the instruction.
+# (Was fld1 before x87 landed; UD2 is guaranteed-invalid forever.)
 # EXPECT: exit=fault fault=ud eip=0x1000
 	.intel_syntax noprefix
 	.text
-	fld1
+	ud2
 	hlt

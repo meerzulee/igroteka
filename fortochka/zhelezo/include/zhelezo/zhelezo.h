@@ -40,6 +40,19 @@ inline constexpr uint32_t EFLAGS_WRITABLE =
 inline constexpr uint32_t HOSTCALL_BASE = 0xF0000000u;
 inline constexpr uint32_t HOSTCALL_END  = 0xF1000000u;
 
+// x87 FPU state. Tier 0 models the register stack as f64, not 80-bit extended —
+// results can differ from real x87 in the last mantissa bits. Single-player has
+// no desync partner, so this is acceptable; `used` flags any run that touched
+// x87 for the determinism ledger (matters only if lockstep MP ever wants it).
+struct X87 {
+    double st[8] = {};      // physical registers; st(i) = st[(top + i) & 7]
+    uint16_t control = 0x037F; // default: round-nearest, 64-bit precision, masked
+    uint16_t status = 0;    // C0/C1/C2/C3 condition flags + TOP field
+    uint8_t top = 0;        // top-of-stack pointer (0..7)
+    uint8_t tag_empty = 0xFF; // bit i set → physical reg i is empty
+    bool used = false;      // any x87 op executed this run
+};
+
 struct Cpu {
     uint32_t gpr[8] = {};
     uint32_t eip = 0;
@@ -47,6 +60,7 @@ struct Cpu {
     uint32_t fs_base = 0; // TIB: SEH chain lives at fs:[0]
     uint32_t gs_base = 0;
     uint64_t icount = 0;  // instructions retired; also the RDTSC source
+    X87 x87;
 };
 
 enum class Exit : uint8_t {

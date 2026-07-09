@@ -8,6 +8,7 @@
 //    per site) rather than left stale, so runs are reproducible.
 //  - LOCK is decoded and ignored: tier 0 is single-threaded by design.
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -30,6 +31,40 @@ inline uint32_t rdW(const Bus& b, uint32_t a, int w) {
 inline void wrW(const Bus& b, uint32_t a, int w, uint32_t v) {
     check(b, a, (uint32_t)w, FaultKind::MemWrite);
     std::memcpy(b.base + a, &v, (size_t)w);
+}
+
+// Typed guest-memory access for x87 operands (little-endian, bounds-checked).
+inline uint64_t rd64(const Bus& b, uint32_t a) {
+    check(b, a, 8, FaultKind::MemRead);
+    uint64_t v;
+    std::memcpy(&v, b.base + a, 8);
+    return v;
+}
+inline void wr64(const Bus& b, uint32_t a, uint64_t v) {
+    check(b, a, 8, FaultKind::MemWrite);
+    std::memcpy(b.base + a, &v, 8);
+}
+inline float rdF32(const Bus& b, uint32_t a) {
+    uint32_t u = rdW(b, a, 4);
+    float f;
+    std::memcpy(&f, &u, 4);
+    return f;
+}
+inline double rdF64(const Bus& b, uint32_t a) {
+    uint64_t u = rd64(b, a);
+    double d;
+    std::memcpy(&d, &u, 8);
+    return d;
+}
+inline void wrF32(const Bus& b, uint32_t a, float f) {
+    uint32_t u;
+    std::memcpy(&u, &f, 4);
+    wrW(b, a, 4, u);
+}
+inline void wrF64(const Bus& b, uint32_t a, double d) {
+    uint64_t u;
+    std::memcpy(&u, &d, 8);
+    wr64(b, a, u);
 }
 
 // ---------------- registers ----------------
@@ -425,6 +460,251 @@ inline void doBt(Cpu& c, const Bus& b, const RM& rm, unsigned btOp, uint32_t off
     else setReg(c, rm.reg, w, v);
 }
 
+// ---------------- x87 FPU ----------------
+//
+// Register stack modeled as f64 (not 80-bit extended); see X87 in the header.
+// Covers the load/store/arith/compare/control subset a 2004 CRT and game math
+// exercise. Unimplemented encodings throw UdFault with a precise EIP, so the
+// first game that needs a new op says exactly which — stub-log-driven, like the
+// import table. Reference: Intel SDM Vol.1 ch.8 / Vol.2 FPU opcode maps.
+
+// Status-word condition-code bits.
+inline constexpr uint16_t X87_C0 = 1 << 8;
+inline constexpr uint16_t X87_C1 = 1 << 9;
+inline constexpr uint16_t X87_C2 = 1 << 10;
+inline constexpr uint16_t X87_C3 = 1 << 14;
+
+inline double& fst(Cpu& c, unsigned i) { return c.x87.st[(c.x87.top + i) & 7]; }
+inline void fpush(Cpu& c, double v) {
+    c.x87.top = (c.x87.top - 1) & 7;
+    c.x87.tag_empty &= ~(1u << c.x87.top);
+    c.x87.st[c.x87.top] = v;
+}
+inline void fpop(Cpu& c) {
+    c.x87.tag_empty |= (1u << c.x87.top);
+    c.x87.top = (c.x87.top + 1) & 7;
+}
+
+// Set C3/C2/C0 from an ordered compare of a vs b (x87 FCOM semantics).
+inline void fcompare(Cpu& c, double a, double b) {
+    uint16_t& sw = c.x87.status;
+    sw &= ~(X87_C0 | X87_C1 | X87_C2 | X87_C3); // C1=0 on a normal compare
+    if (a > b) { /* 000 */ }
+    else if (a < b) sw |= X87_C0;
+    else if (a == b) sw |= X87_C3;
+    else sw |= X87_C0 | X87_C2 | X87_C3; // unordered (NaN)
+}
+
+// idx selects the arithmetic op (matches the reg field of D8/DC/DE):
+// 0 add,1 mul,2 com,3 comp,4 sub,5 subr,6 div,7 divr. Returns the result of
+// `a OP b`; caller assigns to the destination register.
+inline double farith(unsigned idx, double a, double b) {
+    switch (idx) {
+        case 0: return a + b;
+        case 1: return a * b;
+        case 4: return a - b;
+        case 5: return b - a; // subr
+        case 6: return a / b;
+        case 7: return b / a; // divr
+        default: return a;    // com/comp handled by caller
+    }
+}
+
+// Execute one x87 instruction (opcodes 0xD8..0xDF). `in` is already decoded.
+void execX87(Cpu& c, const Bus& b, const Inst& in) {
+    c.x87.used = true;
+    const uint8_t op = in.op;
+    const unsigned reg = in.reg; // ModRM.reg (opcode extension)
+    const bool mem = in.mod != 3;
+
+    if (mem) {
+        RM rm = resolveRM(c, in);
+        const uint32_t a = rm.addr;
+        switch (op) {
+            case 0xD8: // arith st(0) OP m32fp
+                if (reg == 2 || reg == 3) { // fcom/fcomp m32
+                    fcompare(c, fst(c, 0), (double)rdF32(b, a));
+                    if (reg == 3) fpop(c);
+                } else {
+                    fst(c, 0) = farith(reg, fst(c, 0), (double)rdF32(b, a));
+                }
+                return;
+            case 0xDC: // arith st(0) OP m64fp
+                if (reg == 2 || reg == 3) {
+                    fcompare(c, fst(c, 0), rdF64(b, a));
+                    if (reg == 3) fpop(c);
+                } else {
+                    fst(c, 0) = farith(reg, fst(c, 0), rdF64(b, a));
+                }
+                return;
+            case 0xD9:
+                switch (reg) {
+                    case 0: fpush(c, (double)rdF32(b, a)); return;      // fld m32
+                    case 2: wrF32(b, a, (float)fst(c, 0)); return;      // fst m32
+                    case 3: wrF32(b, a, (float)fst(c, 0)); fpop(c); return; // fstp
+                    case 5: c.x87.control = (uint16_t)rdW(b, a, 2); return; // fldcw
+                    case 7: wrW(b, a, 2, c.x87.control); return;        // fnstcw
+                }
+                throw UdFault{};
+            case 0xDB:
+                switch (reg) {
+                    case 0: fpush(c, (double)(int32_t)rdW(b, a, 4)); return; // fild m32
+                    case 2: // fist m32
+                        wrW(b, a, 4, (uint32_t)(int32_t)llrint(fst(c, 0)));
+                        return;
+                    case 3: // fistp m32
+                        wrW(b, a, 4, (uint32_t)(int32_t)llrint(fst(c, 0)));
+                        fpop(c);
+                        return;
+                }
+                throw UdFault{};
+            case 0xDD:
+                switch (reg) {
+                    case 0: fpush(c, rdF64(b, a)); return;              // fld m64
+                    case 2: wrF64(b, a, fst(c, 0)); return;             // fst m64
+                    case 3: wrF64(b, a, fst(c, 0)); fpop(c); return;    // fstp m64
+                    case 7: wrW(b, a, 2, c.x87.status); return;         // fnstsw m
+                }
+                throw UdFault{};
+            case 0xDF:
+                switch (reg) {
+                    case 0: fpush(c, (double)(int16_t)rdW(b, a, 2)); return; // fild m16
+                    case 3: // fistp m16
+                        wrW(b, a, 2, (uint16_t)(int16_t)llrint(fst(c, 0)));
+                        fpop(c);
+                        return;
+                    case 5: fpush(c, (double)(int64_t)rd64(b, a)); return; // fild m64
+                    case 7: // fistp m64
+                        wr64(b, a, (uint64_t)llrint(fst(c, 0)));
+                        fpop(c);
+                        return;
+                }
+                throw UdFault{};
+            case 0xDA: // fiadd… m32int
+                if (reg <= 7 && reg != 2 && reg != 3) {
+                    fst(c, 0) = farith(reg, fst(c, 0), (double)(int32_t)rdW(b, a, 4));
+                    return;
+                }
+                throw UdFault{};
+            case 0xDE: // fiadd… m16int
+                if (reg <= 7 && reg != 2 && reg != 3) {
+                    fst(c, 0) = farith(reg, fst(c, 0), (double)(int16_t)rdW(b, a, 2));
+                    return;
+                }
+                throw UdFault{};
+        }
+        throw UdFault{};
+    }
+
+    // Register form (mod == 3): rm selects st(i); the opcode+reg select the op.
+    const unsigned i = in.rm;
+    switch (op) {
+        case 0xD8: // st(0) OP st(i)
+            if (reg == 2 || reg == 3) {
+                fcompare(c, fst(c, 0), fst(c, i));
+                if (reg == 3) fpop(c);
+            } else {
+                fst(c, 0) = farith(reg, fst(c, 0), fst(c, i));
+            }
+            return;
+        case 0xDC: // st(i) OP st(0)  (reversed operand order)
+            if (reg == 2 || reg == 3) {
+                fcompare(c, fst(c, 0), fst(c, i));
+                if (reg == 3) fpop(c);
+            } else {
+                // D8's reg encodes sub/subr from st(0)'s view; DC swaps roles.
+                unsigned r = reg;
+                if (r == 4) r = 5; else if (r == 5) r = 4;      // sub<->subr
+                else if (r == 6) r = 7; else if (r == 7) r = 6; // div<->divr
+                fst(c, i) = farith(r, fst(c, i), fst(c, 0));
+            }
+            return;
+        case 0xDE: // st(i) OP st(0), then pop  (faddp/fsubp/…)
+            if (reg == 3 && i == 1) { // DE D9 = fcompp
+                fcompare(c, fst(c, 0), fst(c, 1));
+                fpop(c);
+                fpop(c);
+                return;
+            }
+            {
+                unsigned r = reg;
+                if (r == 4) r = 5; else if (r == 5) r = 4;
+                else if (r == 6) r = 7; else if (r == 7) r = 6;
+                fst(c, i) = farith(r, fst(c, i), fst(c, 0));
+                fpop(c);
+            }
+            return;
+        case 0xD9:
+            switch (reg) {
+                case 0: { double v = fst(c, i); fpush(c, v); return; } // fld st(i)
+                case 1: { double t = fst(c, 0); fst(c, 0) = fst(c, i); // fxch
+                          fst(c, i) = t; return; }
+                case 4: // D9 E0..: fchs/fabs/ftst/fxam
+                    switch (i) {
+                        case 0: fst(c, 0) = -fst(c, 0); return;            // fchs
+                        case 1: fst(c, 0) = std::fabs(fst(c, 0)); return;  // fabs
+                        case 4: fcompare(c, fst(c, 0), 0.0); return;       // ftst
+                    }
+                    throw UdFault{};
+                case 5: // D9 E8..EE: load constants
+                    switch (i) {
+                        case 0: fpush(c, 1.0); return;                     // fld1
+                        case 1: fpush(c, 3.32192809488736234787); return; // fldl2t
+                        case 2: fpush(c, 1.44269504088896340736); return; // fldl2e
+                        case 3: fpush(c, 3.14159265358979323846); return; // fldpi
+                        case 4: fpush(c, 0.30102999566398119521); return; // fldlg2
+                        case 5: fpush(c, 0.69314718055994530942); return; // fldln2
+                        case 6: fpush(c, 0.0); return;                     // fldz
+                    }
+                    throw UdFault{};
+                case 6: // D9 F0..F7: transcendental / stack control
+                    switch (i) {
+                        case 6: c.x87.top = (c.x87.top + 1) & 7; return;   // fdecstp (top++)
+                        case 7: c.x87.top = (c.x87.top - 1) & 7; return;   // fincstp (top--)
+                    }
+                    throw UdFault{};
+                case 7: // D9 F8..FF: fsqrt/frndint/fsin/fcos/fscale/fsincos
+                    switch (i) {
+                        case 2: fst(c, 0) = std::sqrt(fst(c, 0)); return;  // fsqrt
+                        case 3: { double s = std::sin(fst(c, 0));          // fsincos
+                                  fst(c, 0) = std::cos(fst(c, 0)); fpush(c, s);
+                                  return; }
+                        case 4: fst(c, 0) = std::nearbyint(fst(c, 0)); return; // frndint
+                        case 5: fst(c, 0) = std::ldexp(                    // fscale
+                                    fst(c, 0), (int)std::trunc(fst(c, 1)));
+                                return;
+                        case 6: fst(c, 0) = std::sin(fst(c, 0)); return;   // fsin
+                        case 7: fst(c, 0) = std::cos(fst(c, 0)); return;   // fcos
+                    }
+                    throw UdFault{};
+            }
+            throw UdFault{};
+        case 0xDD:
+            switch (reg) {
+                case 0: c.x87.tag_empty |= (1u << ((c.x87.top + i) & 7)); return; // ffree
+                case 2: fst(c, i) = fst(c, 0); return;              // fst st(i)
+                case 3: fst(c, i) = fst(c, 0); fpop(c); return;     // fstp st(i)
+                case 4: fcompare(c, fst(c, 0), fst(c, i)); return;  // fucom
+                case 5: fcompare(c, fst(c, 0), fst(c, i)); fpop(c); return; // fucomp
+            }
+            throw UdFault{};
+        case 0xDB:
+            // DB E0..E4: fneni/fndisi/fnclex/fninit/fnsetpm (no-ops or init).
+            if (reg == 4) {
+                if (i == 3) { c.x87 = X87{}; c.x87.used = true; } // fninit
+                return; // fnclex and the obsolete ones: no-op
+            }
+            throw UdFault{};
+        case 0xDF:
+            if (reg == 4 && i == 0) { // DF E0 = fnstsw ax
+                c.gpr[EAX] = (c.gpr[EAX] & 0xFFFF0000u) | c.x87.status;
+                return;
+            }
+            throw UdFault{};
+    }
+    throw UdFault{};
+}
+
 // ---------------- one instruction ----------------
 
 // Returns Exit::Steps to continue.
@@ -690,7 +970,10 @@ RunResult exec1(Cpu& c, const Bus& b, const Inst& in, uint32_t next) {
         doString(c, b, in);
         return {};
     }
-    if (op >= 0xD8 && op <= 0xDF) throw UdFault{}; // x87: F1-scope, not yet
+    if (op >= 0xD8 && op <= 0xDF) { // x87 FPU
+        execX87(c, b, in);
+        return {};
+    }
 
     switch (op) {
         case 0x60: { // pusha
