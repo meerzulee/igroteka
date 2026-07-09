@@ -4,7 +4,7 @@
 // Versions — single source of truth. The About window shows both; the play
 // page cache-busts engine fetches with ENGINE_BUILD (bump it whenever new
 // GeneralsXZH.js/.wasm binaries are staged, or browsers replay the old ones).
-export const SITE_VERSION = '0.1.0';
+export const SITE_VERSION = '0.2.0';
 export const ENGINE_BUILD = 31;
 
 export const ZH_MANIFEST = {
