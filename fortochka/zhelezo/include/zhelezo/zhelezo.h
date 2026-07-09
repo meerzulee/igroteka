@@ -53,6 +53,15 @@ struct X87 {
     bool used = false;      // any x87 op executed this run
 };
 
+// SSE state: eight 128-bit XMM registers + the control/status word. Tier-0
+// implements the SSE1 (single-precision) subset era code hits; the P3 cpuid
+// persona advertises SSE, so guests may use it.
+struct Sse {
+    alignas(16) uint8_t xmm[8][16] = {}; // raw bytes; reinterpreted as f32x4 etc.
+    uint32_t mxcsr = 0x1F80;             // default: all exceptions masked
+    bool used = false;
+};
+
 struct Cpu {
     uint32_t gpr[8] = {};
     uint32_t eip = 0;
@@ -61,6 +70,7 @@ struct Cpu {
     uint32_t gs_base = 0;
     uint64_t icount = 0;  // instructions retired; also the RDTSC source
     X87 x87;
+    Sse sse;
 };
 
 enum class Exit : uint8_t {

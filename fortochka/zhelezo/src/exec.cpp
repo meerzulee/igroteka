@@ -66,6 +66,14 @@ inline void wrF64(const Bus& b, uint32_t a, double d) {
     std::memcpy(&u, &d, 8);
     wr64(b, a, u);
 }
+inline void rd128(const Bus& b, uint32_t a, uint8_t out[16]) {
+    check(b, a, 16, FaultKind::MemRead);
+    std::memcpy(out, b.base + a, 16);
+}
+inline void wr128(const Bus& b, uint32_t a, const uint8_t in[16]) {
+    check(b, a, 16, FaultKind::MemWrite);
+    std::memcpy(b.base + a, in, 16);
+}
 
 // ---------------- registers ----------------
 
@@ -731,6 +739,238 @@ void execX87(Cpu& c, const Bus& b, const Inst& in) {
     throw UdFault{};
 }
 
+// ---------------- SSE (SSE1 single-precision subset) ----------------
+//
+// XMM modeled as raw 16 bytes (see Sse in the header). Mandatory prefixes pick
+// the variant: no prefix = packed single (PS), F3 (rep) = scalar single (SS).
+// 66/F2 variants are SSE2 (packed/scalar double) — UD here until needed. MXCSR
+// rounding is honored for cvttss (always truncate) but not for the arithmetic
+// (host f32 semantics); games rarely change MXCSR rounding. Unimplemented
+// encodings throw a precise UdFault. Reference: Intel SDM Vol.2 SSE pages.
+
+// Sign-extend/interpret a float register lane pointer.
+inline float* xf(Cpu& c, unsigned i) {
+    return reinterpret_cast<float*>(c.sse.xmm[i]);
+}
+
+void execSSE(Cpu& c, const Bus& b, const Inst& in) {
+    c.sse.used = true;
+    const uint8_t op = in.op;
+    const bool F3 = in.rep;          // scalar single (SS)
+    const bool F2 = in.repne;        // scalar double (SSE2)
+    const bool P66 = in.opsize == 2; // packed double / int (SSE2)
+    const unsigned dst = in.reg;     // ModRM.reg = destination xmm (usually)
+    const unsigned rmreg = in.rm;    // register-form source xmm
+    const bool mem = in.mod != 3;
+    if (F2 || P66) throw UdFault{}; // SSE2 double variants: out of tier-0 scope
+
+    uint32_t addr = 0;
+    if (mem) addr = resolveRM(c, in).addr;
+
+    // Source loaders.
+    auto load_ps = [&](float out[4]) {
+        if (mem) {
+            uint8_t t[16];
+            rd128(b, addr, t);
+            std::memcpy(out, t, 16);
+        } else {
+            std::memcpy(out, c.sse.xmm[rmreg], 16);
+        }
+    };
+    auto load_ss = [&]() -> float {
+        if (mem) return rdF32(b, addr);
+        float f;
+        std::memcpy(&f, c.sse.xmm[rmreg], 4);
+        return f;
+    };
+
+    switch (op) {
+        case 0x10:   // movups/movss  xmm(reg) <- src
+        case 0x28: { // movaps
+            if (F3) { // movss
+                if (mem) { // load: low32 = mem, upper zeroed
+                    float v = rdF32(b, addr);
+                    std::memset(c.sse.xmm[dst], 0, 16);
+                    std::memcpy(c.sse.xmm[dst], &v, 4);
+                } else { // reg-reg: only low32 moves, upper preserved
+                    std::memcpy(c.sse.xmm[dst], c.sse.xmm[rmreg], 4);
+                }
+            } else {
+                float t[4];
+                load_ps(t);
+                std::memcpy(c.sse.xmm[dst], t, 16);
+            }
+            return;
+        }
+        case 0x11:   // movups/movss  dst <- xmm(reg)
+        case 0x29: { // movaps store
+            if (F3) { // movss store: low 32
+                if (mem) wrF32(b, addr, *xf(c, dst));
+                else std::memcpy(c.sse.xmm[rmreg], c.sse.xmm[dst], 4);
+            } else {
+                if (mem) wr128(b, addr, c.sse.xmm[dst]);
+                else std::memcpy(c.sse.xmm[rmreg], c.sse.xmm[dst], 16);
+            }
+            return;
+        }
+        case 0x12: // movlps/movhlps
+            if (mem) { float v[2]; v[0]=rdF32(b,addr); v[1]=rdF32(b,addr+4);
+                       std::memcpy(c.sse.xmm[dst], v, 8); }        // movlps: low 64
+            else std::memcpy(c.sse.xmm[dst], c.sse.xmm[rmreg] + 8, 8); // movhlps
+            return;
+        case 0x16: // movhps/movlhps
+            if (mem) { float v[2]; v[0]=rdF32(b,addr); v[1]=rdF32(b,addr+4);
+                       std::memcpy(c.sse.xmm[dst] + 8, v, 8); }    // movhps: high 64
+            else std::memcpy(c.sse.xmm[dst] + 8, c.sse.xmm[rmreg], 8); // movlhps
+            return;
+        case 0x13: // movlps store (low 64 → mem)
+            if (!mem) throw UdFault{};
+            wrF32(b, addr, xf(c, dst)[0]); wrF32(b, addr + 4, xf(c, dst)[1]);
+            return;
+        case 0x17: // movhps store (high 64 → mem)
+            if (!mem) throw UdFault{};
+            wrF32(b, addr, xf(c, dst)[2]); wrF32(b, addr + 4, xf(c, dst)[3]);
+            return;
+        case 0x14:   // unpcklps
+        case 0x15: { // unpckhps
+            float s[4], d0[4];
+            load_ps(s);
+            std::memcpy(d0, c.sse.xmm[dst], 16);
+            float* d = xf(c, dst);
+            unsigned base = op == 0x15 ? 2 : 0;
+            d[0] = d0[base]; d[1] = s[base]; d[2] = d0[base + 1]; d[3] = s[base + 1];
+            return;
+        }
+        case 0x51: // sqrt
+        case 0x58: // add
+        case 0x59: // mul
+        case 0x5C: // sub
+        case 0x5D: // min
+        case 0x5E: // div
+        case 0x5F: { // max
+            auto apply = [&](float a, float s) -> float {
+                switch (op) {
+                    case 0x51: return std::sqrt(s);
+                    case 0x58: return a + s;
+                    case 0x59: return a * s;
+                    case 0x5C: return a - s;
+                    case 0x5D: return s < a ? s : a;
+                    case 0x5E: return a / s;
+                    default: return s > a ? s : a; // 0x5F max
+                }
+            };
+            float* d = xf(c, dst);
+            if (F3) {
+                float s = load_ss();
+                d[0] = apply(d[0], s);
+            } else {
+                float s[4];
+                load_ps(s);
+                for (int i = 0; i < 4; i++) d[i] = apply(d[i], s[i]);
+            }
+            return;
+        }
+        case 0x54:   // andps
+        case 0x55:   // andnps
+        case 0x56:   // orps
+        case 0x57: { // xorps
+            uint8_t s[16];
+            if (mem) rd128(b, addr, s);
+            else std::memcpy(s, c.sse.xmm[rmreg], 16);
+            uint8_t* d = c.sse.xmm[dst];
+            for (int i = 0; i < 16; i++) {
+                switch (op) {
+                    case 0x54: d[i] &= s[i]; break;
+                    case 0x55: d[i] = ~d[i] & s[i]; break;
+                    case 0x56: d[i] |= s[i]; break;
+                    default: d[i] ^= s[i]; break;
+                }
+            }
+            return;
+        }
+        case 0x2E:   // ucomiss
+        case 0x2F: { // comiss — compare low floats, set EFLAGS
+            float a = *xf(c, dst), s = load_ss();
+            c.eflags &= ~(FLAG_ZF | FLAG_PF | FLAG_CF | FLAG_SF | FLAG_OF | FLAG_AF);
+            if (std::isnan(a) || std::isnan(s)) c.eflags |= FLAG_ZF | FLAG_PF | FLAG_CF;
+            else if (a < s) c.eflags |= FLAG_CF;
+            else if (a == s) c.eflags |= FLAG_ZF;
+            // a > s → all clear
+            return;
+        }
+        case 0x2A: { // cvtsi2ss  xmm(reg).low = (float)(int32) r/m32
+            int32_t s = mem ? (int32_t)rdW(b, addr, 4) : (int32_t)c.gpr[rmreg];
+            xf(c, dst)[0] = (float)s;
+            return;
+        }
+        case 0x2C:   // cvttss2si — truncate
+        case 0x2D: { // cvtss2si  — round (nearest); dest = r32
+            float s = load_ss();
+            c.gpr[dst] = (uint32_t)(int32_t)(op == 0x2C ? std::trunc(s)
+                                                        : std::nearbyint(s));
+            return;
+        }
+        case 0x50: { // movmskps: sign bits of 4 floats → r32
+            if (mem) throw UdFault{}; // reg-form only
+            uint32_t m = 0;
+            for (int i = 0; i < 4; i++)
+                if (xf(c, rmreg)[i] < 0 || std::signbit(xf(c, rmreg)[i]))
+                    m |= (1u << i);
+            c.gpr[dst] = m;
+            return;
+        }
+        case 0xC6: { // shufps xmm(reg), src, imm8
+            float s[4], d0[4];
+            load_ps(s);
+            std::memcpy(d0, c.sse.xmm[dst], 16);
+            uint8_t sel = (uint8_t)in.imm;
+            float* d = xf(c, dst);
+            d[0] = d0[sel & 3];
+            d[1] = d0[(sel >> 2) & 3];
+            d[2] = s[(sel >> 4) & 3];
+            d[3] = s[(sel >> 6) & 3];
+            return;
+        }
+        case 0xC2: { // cmpps/cmpss xmm(reg), src, imm8 → all-1s or all-0s mask
+            uint8_t pred = (uint8_t)in.imm & 7;
+            auto cmp = [&](float a, float s) -> uint32_t {
+                bool r;
+                switch (pred) {
+                    case 0: r = a == s; break;
+                    case 1: r = a < s; break;
+                    case 2: r = a <= s; break;
+                    case 3: r = std::isnan(a) || std::isnan(s); break;
+                    case 4: r = !(a == s); break;
+                    case 5: r = !(a < s); break;
+                    case 6: r = !(a <= s); break;
+                    default: r = !(std::isnan(a) || std::isnan(s)); break;
+                }
+                return r ? 0xFFFFFFFFu : 0u;
+            };
+            float* d = xf(c, dst);
+            if (F3) {
+                uint32_t r = cmp(d[0], load_ss());
+                std::memcpy(&d[0], &r, 4);
+            } else {
+                float s[4];
+                load_ps(s);
+                for (int i = 0; i < 4; i++) {
+                    uint32_t r = cmp(d[i], s[i]);
+                    std::memcpy(&d[i], &r, 4);
+                }
+            }
+            return;
+        }
+        case 0xAE: // ldmxcsr(/2) / stmxcsr(/3); mod=3 = lfence/mfence/sfence
+            if (!mem) return; // fences: single-threaded, no-op
+            if (in.reg == 2) c.sse.mxcsr = rdW(b, addr, 4);
+            else if (in.reg == 3) wrW(b, addr, 4, c.sse.mxcsr);
+            else throw UdFault{}; // fxsave/fxrstor not modeled
+            return;
+    }
+    throw UdFault{};
+}
+
 // ---------------- one instruction ----------------
 
 // Returns Exit::Steps to continue.
@@ -741,6 +981,13 @@ RunResult exec1(Cpu& c, const Bus& b, const Inst& in, uint32_t next) {
     const uint8_t op = in.op;
 
     if (in.twobyte) {
+        // SSE opcode blocks (mov/arith/logic/cvt/compare/shuffle/mxcsr) route to
+        // the SSE engine, which reads the mandatory prefix to pick the variant.
+        if ((op >= 0x10 && op <= 0x17) || (op >= 0x28 && op <= 0x2F) ||
+            (op >= 0x50 && op <= 0x5F) || op == 0xC2 || op == 0xC6 || op == 0xAE) {
+            execSSE(c, b, in);
+            return {};
+        }
         switch (op) {
             case 0x0B: throw UdFault{}; // UD2
             case 0x18:

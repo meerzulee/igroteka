@@ -44,18 +44,18 @@ constexpr uint8_t kOne[256] = {
 
 constexpr uint8_t kTwo[256] = {
     /*00*/ X, X, X, X, X, X, X, X,         /*08*/ X, X, X, 0 /*UD2*/, X, X, X, X,
-    /*10*/ X, X, X, X, X, X, X, X,         /*18*/ M, X, X, X, X, X, X, M, // 18=hint-nop, 1F=long nop
-    /*20*/ X, X, X, X, X, X, X, X,         /*28*/ X, X, X, X, X, X, X, X,
+    /*10*/ M, M, M, M, M, M, M, M,         /*18*/ M, X, X, X, X, X, X, M, // 10-17 SSE mov/unpck
+    /*20*/ X, X, X, X, X, X, X, X,         /*28*/ M, M, M, M, M, M, M, M, // 28-2F SSE mov/cvt/comiss
     /*30*/ X, 0 /*rdtsc*/, X, X, X, X, X, X, /*38*/ X, X, X, X, X, X, X, X,
     /*40*/ M, M, M, M, M, M, M, M,         /*48*/ M, M, M, M, M, M, M, M, // cmovcc
-    /*50*/ X, X, X, X, X, X, X, X,         /*58*/ X, X, X, X, X, X, X, X,
+    /*50*/ M, M, M, M, M, M, M, M,         /*58*/ M, M, M, M, M, M, M, M, // 50-5F SSE arith/logic
     /*60*/ X, X, X, X, X, X, X, X,         /*68*/ X, X, X, X, X, X, X, X,
     /*70*/ X, X, X, X, X, X, X, X,         /*78*/ X, X, X, X, X, X, X, X,
     /*80*/ RW, RW, RW, RW, RW, RW, RW, RW, /*88*/ RW, RW, RW, RW, RW, RW, RW, RW,
     /*90*/ M, M, M, M, M, M, M, M,         /*98*/ M, M, M, M, M, M, M, M, // setcc
-    /*A0*/ 0, 0, 0, M, M|I8, M, X, X,      /*A8*/ 0, 0, X, M, M|I8, M, X, M,
+    /*A0*/ 0, 0, 0, M, M|I8, M, X, X,      /*A8*/ 0, 0, X, M, M|I8, M, M, M, // AE=ldmxcsr/stmxcsr
     /*B0*/ M, M, X, M, X, X, M, M,         /*B8*/ X, X, M|I8, M, M, M, M, M,
-    /*C0*/ M, M, X, X, X, X, X, M,         /*C8*/ 0, 0, 0, 0, 0, 0, 0, 0, // bswap
+    /*C0*/ M, M, M|I8, X, X, X, M|I8, M,   /*C8*/ 0, 0, 0, 0, 0, 0, 0, 0, // C2 cmpps, C6 shufps; C8-CF bswap
     /*D0*/ X, X, X, X, X, X, X, X,         /*D8*/ X, X, X, X, X, X, X, X,
     /*E0*/ X, X, X, X, X, X, X, X,         /*E8*/ X, X, X, X, X, X, X, X,
     /*F0*/ X, X, X, X, X, X, X, X,         /*F8*/ X, X, X, X, X, X, X, X,
