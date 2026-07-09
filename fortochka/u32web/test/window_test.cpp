@@ -102,9 +102,11 @@ static int run_paint(std::vector<uint8_t>& exe, const char* ppm_out) {
     return ok ? 0 : 1;
 }
 
-// d3d mode: run a D3D9 program (no message pump needed) and inspect the device
-// backbuffer d9web presented. Spot-checks the clear color (RGB 0x336699).
-static int run_d3d(std::vector<uint8_t>& exe, const char* ppm_out) {
+// d3d mode: run a D3D9 program (no pump) and inspect the presented backbuffer.
+// --corner HEX asserts the top-left pixel (clear color); --tri asserts the
+// center pixel differs from the corner (geometry was drawn over the clear).
+static int run_d3d(std::vector<uint8_t>& exe, const char* ppm_out,
+                   long corner, bool tri) {
     Machine m(64u << 20);
     m.load(exe.data(), exe.size());
     k32web::install(m);
@@ -128,34 +130,40 @@ static int run_d3d(std::vector<uint8_t>& exe, const char* ppm_out) {
         }
         fclose(f);
     }
-    uint32_t px = fb[0] & 0xFFFFFF;
-    printf("d3d %ux%u clear=%06x\n", w, h, px);
-    bool ok = px == 0x336699;
-    printf("%s d3dclear.exe — D3D9 COM Clear reached the backbuffer\n",
+    uint32_t px0 = fb[0] & 0xFFFFFF;
+    uint32_t center = fb[(size_t)(h / 2) * w + (w / 2)] & 0xFFFFFF;
+    printf("d3d %ux%u corner=%06x center=%06x\n", w, h, px0, center);
+    bool ok = true;
+    if (corner >= 0 && px0 != (uint32_t)corner) ok = false;
+    if (tri && center == px0) ok = false; // triangle must cover the center
+    printf("%s D3D9 frame — COM path reached the backbuffer\n",
            ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
 }
 
 int main(int argc, char** argv) {
-    bool recurse = false, paint = false, d3d = false;
+    bool recurse = false, paint = false, d3d = false, tri = false;
+    long corner = -1;
     const char* paint_out = nullptr;
     const char* path = nullptr;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--recurse-guard")) recurse = true;
         else if (!strcmp(argv[i], "--paint")) paint = true;
         else if (!strcmp(argv[i], "--d3d")) d3d = true;
+        else if (!strcmp(argv[i], "--tri")) tri = true;
+        else if (!strcmp(argv[i], "--corner") && i + 1 < argc) corner = strtol(argv[++i], nullptr, 16);
         else if (!strcmp(argv[i], "--ppm") && i + 1 < argc) paint_out = argv[++i];
         else path = argv[i];
     }
     if (!path) {
-        fprintf(stderr, "usage: window_test [--recurse-guard|--paint|--d3d [--ppm F]] exe\n");
+        fprintf(stderr, "usage: window_test [--recurse-guard|--paint|--d3d [--tri|--corner HEX]] exe\n");
         return 2;
     }
     std::vector<uint8_t> exe = slurp(path);
 
     if (recurse) return run_recurse_guard(exe);
     if (paint) return run_paint(exe, paint_out);
-    if (d3d) return run_d3d(exe, paint_out);
+    if (d3d) return run_d3d(exe, paint_out, corner, tri);
 
     Machine m(64u << 20);
     try {

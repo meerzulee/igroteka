@@ -1,6 +1,8 @@
 #include "d9web/d9web.h"
 
+#include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -25,6 +27,7 @@ struct State {
     uint32_t width = 640, height = 480;
     std::vector<uint32_t> backbuffer; // ARGB 0xFFRRGGBB, width*height
     bool presented = false;
+    uint32_t fvf = 0;                        // current SetFVF
     uint32_t d3d9_vtbl = 0, device_vtbl = 0; // 0 until first use
     void ensure_bb() {
         if (backbuffer.size() != (size_t)width * height)
@@ -32,6 +35,14 @@ struct State {
     }
 };
 State g_state;
+
+// Read a guest float (IEEE-754 bits).
+inline float read_f32(Machine& m, uint32_t va) {
+    uint32_t u = m.read32(va);
+    float f;
+    std::memcpy(&f, &u, 4);
+    return f;
+}
 
 // A vtable slot: the API name (for diagnostics + as the scope document),
 // the stdcall dword count including `this` (so ret() pops correctly), and the
@@ -81,6 +92,65 @@ void dev_present(Machine& m, const Method& mm) {
     g_state.presented = true;
     m.ret(mm.nargs, 0);
 }
+void dev_set_fvf(Machine& m, const Method& mm) {
+    g_state.fvf = m.arg(1); // state-tracker input; consumed by DrawPrimitiveUP
+    m.ret(mm.nargs, 0);
+}
+
+// One pre-transformed, Gouraud-colored vertex (D3DFVF_XYZRHW | D3DFVF_DIFFUSE).
+struct Vtx {
+    float x, y;
+    uint32_t color; // D3DCOLOR 0xAARRGGBB
+};
+inline float edge(float ax, float ay, float bx, float by, float px, float py) {
+    return (px - ax) * (by - ay) - (py - ay) * (bx - ax);
+}
+
+// Software-rasterize one screen-space triangle into the backbuffer (barycentric
+// coverage, Gouraud color, no depth/cull — enough for the first geometry).
+void raster_triangle(State& s, const Vtx& a, const Vtx& b, const Vtx& c) {
+    float area = edge(a.x, a.y, b.x, b.y, c.x, c.y);
+    if (area == 0) return;
+    float inv = 1.0f / area; // sign handles either winding
+    int minx = std::max(0, (int)std::min({a.x, b.x, c.x}));
+    int maxx = std::min((int)s.width - 1, (int)std::max({a.x, b.x, c.x}));
+    int miny = std::max(0, (int)std::min({a.y, b.y, c.y}));
+    int maxy = std::min((int)s.height - 1, (int)std::max({a.y, b.y, c.y}));
+    for (int y = miny; y <= maxy; y++) {
+        for (int x = minx; x <= maxx; x++) {
+            float px = x + 0.5f, py = y + 0.5f;
+            float w0 = edge(b.x, b.y, c.x, c.y, px, py) * inv;
+            float w1 = edge(c.x, c.y, a.x, a.y, px, py) * inv;
+            float w2 = edge(a.x, a.y, b.x, b.y, px, py) * inv;
+            if (w0 < 0 || w1 < 0 || w2 < 0) continue; // outside
+            auto chan = [&](int sh) {
+                float v = w0 * ((a.color >> sh) & 0xFF) +
+                          w1 * ((b.color >> sh) & 0xFF) +
+                          w2 * ((c.color >> sh) & 0xFF);
+                return (uint32_t)(v < 0 ? 0 : v > 255 ? 255 : v);
+            };
+            s.backbuffer[(size_t)y * s.width + x] =
+                0xFF000000u | (chan(16) << 16) | (chan(8) << 8) | chan(0);
+        }
+    }
+}
+
+void dev_draw_primitive_up(Machine& m, const Method& mm) {
+    // DrawPrimitiveUP(this, PrimitiveType, PrimitiveCount, pVertexData, Stride).
+    uint32_t type = m.arg(1), count = m.arg(2), data = m.arg(3), stride = m.arg(4);
+    if (type != 4 /*D3DPT_TRIANGLELIST*/)
+        throw MachineError{"DrawPrimitiveUP: only D3DPT_TRIANGLELIST supported"};
+    if (g_state.fvf != (0x004 | 0x040) /*XYZRHW|DIFFUSE*/)
+        throw MachineError{"DrawPrimitiveUP: only FVF XYZRHW|DIFFUSE supported"};
+    g_state.ensure_bb();
+    auto vtx = [&](uint32_t i) -> Vtx {
+        uint32_t p = data + i * stride;
+        return {read_f32(m, p + 0), read_f32(m, p + 4), m.read32(p + 16)};
+    };
+    for (uint32_t t = 0; t < count; t++)
+        raster_triangle(g_state, vtx(3 * t), vtx(3 * t + 1), vtx(3 * t + 2));
+    m.ret(mm.nargs, 0);
+}
 
 // IDirect3DDevice9 vtable in d3d9.h declaration order — POSITION IS THE INDEX.
 // nargs matters only for handled rows; null-fn rows throw before returning.
@@ -128,10 +198,10 @@ constexpr Method kDeviceVtbl[] = {
     {"GetScissorRect", 0, nullptr}, {"SetSoftwareVertexProcessing", 0, nullptr},
     {"GetSoftwareVertexProcessing", 0, nullptr}, {"SetNPatchMode", 0, nullptr},
     {"GetNPatchMode", 0, nullptr}, {"DrawPrimitive", 0, nullptr},
-    {"DrawIndexedPrimitive", 0, nullptr}, {"DrawPrimitiveUP", 0, nullptr},
+    {"DrawIndexedPrimitive", 0, nullptr}, {"DrawPrimitiveUP", 5, dev_draw_primitive_up},
     {"DrawIndexedPrimitiveUP", 0, nullptr}, {"ProcessVertices", 0, nullptr},
     {"CreateVertexDeclaration", 0, nullptr}, {"SetVertexDeclaration", 0, nullptr},
-    {"GetVertexDeclaration", 0, nullptr}, {"SetFVF", 2, ret_ok},
+    {"GetVertexDeclaration", 0, nullptr}, {"SetFVF", 2, dev_set_fvf},
     {"GetFVF", 0, nullptr}, {"CreateVertexShader", 0, nullptr},
     {"SetVertexShader", 0, nullptr}, {"GetVertexShader", 0, nullptr},
     {"SetVertexShaderConstantF", 0, nullptr}, {"GetVertexShaderConstantF", 0, nullptr},
