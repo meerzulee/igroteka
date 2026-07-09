@@ -9,6 +9,7 @@
 //  - LOCK is decoded and ignored: tier 0 is single-threaded by design.
 #include <array>
 #include <cstring>
+#include <vector>
 
 #include "insn.h"
 
@@ -985,7 +986,52 @@ RunResult exec1(Cpu& c, const Bus& b, const Inst& in, uint32_t next) {
 
 } // namespace
 
-RunResult run(Cpu& cpu, const Bus& bus, uint64_t max_steps) {
+// Direct-mapped decode cache. Each slot holds a decoded instruction plus the
+// raw bytes it came from; a hit is confirmed by memcmp against live memory, so
+// self-modifying code re-decodes automatically without any write tracking.
+class DecodeCache {
+  public:
+    static constexpr unsigned kBits = 16; // 65536 slots (~4 MB)
+    static constexpr uint32_t kMask = (1u << kBits) - 1;
+
+    struct Slot {
+        uint32_t eip = 0xFFFFFFFFu; // tag; this value never appears as a real
+                                    // hostcall-free EIP we cache
+        uint8_t len = 0;
+        uint8_t bytes[15] = {};
+        Inst inst;
+    };
+
+    // Return the decoded instruction at eip, from cache when the bytes still
+    // match, decoding (and may throw) on a miss.
+    const Inst& fetch(const Bus& bus, uint32_t eip) {
+        Slot& s = table_[(eip ^ (eip >> kBits)) & kMask];
+        if (s.eip == eip && eip + s.len <= bus.size &&
+            std::memcmp(s.bytes, bus.base + eip, s.len) == 0)
+            return s.inst;
+        Inst in;
+        decode(bus, eip, in); // throws MemFault/UdFault on bad fetch — slot kept
+        s.eip = eip;
+        s.len = in.len;
+        std::memcpy(s.bytes, bus.base + eip, in.len);
+        s.inst = in;
+        return s.inst;
+    }
+    void clear() {
+        for (Slot& s : table_) s.eip = 0xFFFFFFFFu;
+    }
+
+  private:
+    std::vector<Slot> table_{size_t(1) << kBits};
+};
+
+DecodeCache* decode_cache_new() { return new DecodeCache(); }
+void decode_cache_free(DecodeCache* c) { delete c; }
+void decode_cache_clear(DecodeCache* c) {
+    if (c) c->clear();
+}
+
+RunResult run(Cpu& cpu, const Bus& bus, uint64_t max_steps, DecodeCache* cache) {
     RunResult r{};
     for (uint64_t n = 0; n < max_steps; n++) {
         if (cpu.eip >= HOSTCALL_BASE && cpu.eip < HOSTCALL_END) {
@@ -995,8 +1041,9 @@ RunResult run(Cpu& cpu, const Bus& bus, uint64_t max_steps) {
         }
         const uint32_t start = cpu.eip;
         try {
-            Inst in;
-            decode(bus, start, in);
+            Inst local;
+            const Inst& in = cache ? cache->fetch(bus, start)
+                                   : (decode(bus, start, local), local);
             RunResult one = exec1(cpu, bus, in, start + in.len);
             cpu.icount++;
             if (one.exit != Exit::Steps) {

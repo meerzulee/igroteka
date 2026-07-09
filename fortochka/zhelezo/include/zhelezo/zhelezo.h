@@ -75,8 +75,19 @@ struct RunResult {
     uint64_t steps = 0;      // instructions retired during this call
 };
 
-// Execute until an exit condition or max_steps instructions.
-RunResult run(Cpu& cpu, const Bus& bus, uint64_t max_steps);
+// Opaque per-CPU decode cache: memoizes decoded instructions by EIP, validated
+// against the live bytes so self-modifying code stays correct. Passing one to
+// run() skips re-decoding hot blocks. Owned by the caller; one per guest whose
+// memory is independent.
+class DecodeCache;
+DecodeCache* decode_cache_new();
+void decode_cache_free(DecodeCache*);
+void decode_cache_clear(DecodeCache*); // drop all entries (e.g. after remap)
+
+// Execute until an exit condition or max_steps instructions. Passing a cache is
+// a pure speedup; nullptr decodes every instruction fresh (identical results).
+RunResult run(Cpu& cpu, const Bus& bus, uint64_t max_steps,
+              DecodeCache* cache = nullptr);
 
 // Execute exactly one instruction (the permanent debugger primitive).
 RunResult step(Cpu& cpu, const Bus& bus);

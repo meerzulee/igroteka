@@ -41,12 +41,14 @@ int main(int argc, char** argv) {
     uint32_t load = 0x1000, esp = 0xF0000;
     uint64_t max_steps = 10'000'000;
     bool trace = false;
+    bool nocache = false;
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--load") && i + 1 < argc) load = (uint32_t)strtoul(argv[++i], nullptr, 0);
         else if (!strcmp(argv[i], "--esp") && i + 1 < argc) esp = (uint32_t)strtoul(argv[++i], nullptr, 0);
         else if (!strcmp(argv[i], "--steps") && i + 1 < argc) max_steps = strtoull(argv[++i], nullptr, 0);
         else if (!strcmp(argv[i], "--trace")) trace = true;
+        else if (!strcmp(argv[i], "--no-cache")) nocache = true;
         else path = argv[i];
     }
     if (!path) {
@@ -82,8 +84,12 @@ int main(int argc, char** argv) {
             r = step(cpu, bus);
             if (r.exit != Exit::Steps) break;
         }
-    } else {
+    } else if (nocache) {
         r = run(cpu, bus, max_steps);
+    } else {
+        DecodeCache* cache = decode_cache_new();
+        r = run(cpu, bus, max_steps, cache);
+        decode_cache_free(cache);
     }
 
     printf("exit=%s fault=%s vector=%u fault_addr=0x%08x icount=%" PRIu64 "\n",

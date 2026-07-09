@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -87,6 +88,11 @@ class Machine {
 
     std::vector<uint8_t> arena_;
     zhelezo::Cpu cpu_;
+    // Per-guest decode cache: memoizes decoded instructions across the whole
+    // process lifetime so hot blocks skip re-decoding. Custom deleter keeps the
+    // type opaque here.
+    std::unique_ptr<zhelezo::DecodeCache, void (*)(zhelezo::DecodeCache*)> cache_{
+        zhelezo::decode_cache_new(), zhelezo::decode_cache_free};
     std::vector<Handler> handlers_;
     std::vector<const peload::Import*> slots_; // index by hostcall slot
     uint32_t next_slot_ = 0;

@@ -83,7 +83,7 @@ void Machine::dispatch_import(uint32_t slot) {
 uint32_t Machine::drive(uint32_t sentinel_slot, uint64_t step_budget) {
     Bus b = bus();
     for (;;) {
-        RunResult r = run(cpu_, b, step_budget);
+        RunResult r = run(cpu_, b, step_budget, cache_.get());
         switch (r.exit) {
             case Exit::Hostcall: {
                 uint32_t slot = (cpu_.eip - HOSTCALL_BASE) / 16;
