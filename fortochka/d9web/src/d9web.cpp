@@ -24,6 +24,20 @@ constexpr uint32_t OBJ_REFCOUNT = 4;
 // One guest process per Machine in tier 0, so a global is fine here (matches
 // u32web). Vtables are created lazily on first Direct3DCreate9 — NOT in
 // install(), because run_entry() resets the guest heap after install().
+// FVF bits we recognize.
+constexpr uint32_t FVF_XYZ = 0x002, FVF_XYZRHW = 0x004, FVF_DIFFUSE = 0x040;
+
+// 4x4 identity (row-major, D3D row-vector convention: clip = v * M).
+inline void mat_identity(float* m) {
+    for (int i = 0; i < 16; i++) m[i] = (i % 5 == 0) ? 1.0f : 0.0f;
+}
+inline void mat_mul(const float* a, const float* b, float* out) {
+    for (int i = 0; i < 4; i++)
+        for (int j = 0; j < 4; j++)
+            out[i * 4 + j] = a[i * 4 + 0] * b[0 * 4 + j] + a[i * 4 + 1] * b[1 * 4 + j] +
+                             a[i * 4 + 2] * b[2 * 4 + j] + a[i * 4 + 3] * b[3 * 4 + j];
+}
+
 struct State {
     uint32_t width = 640, height = 480;
     std::vector<uint32_t> backbuffer; // ARGB 0xFFRRGGBB, width*height
@@ -32,7 +46,16 @@ struct State {
     // Bound stream 0 (SetStreamSource): the vertex-buffer COM object, byte
     // offset into it, and vertex stride.
     uint32_t stream_vb = 0, stream_offset = 0, stream_stride = 0;
+    // Fixed-function transform state (SetTransform / SetViewport). Untransformed
+    // XYZ vertices go through World*View*Projection then the viewport map.
+    float world[16], view[16], proj[16];
+    float vp_x = 0, vp_y = 0, vp_w = 640, vp_h = 480;
     uint32_t d3d9_vtbl = 0, device_vtbl = 0, vbuffer_vtbl = 0; // 0 until first use
+    State() {
+        mat_identity(world);
+        mat_identity(view);
+        mat_identity(proj);
+    }
     void ensure_bb() {
         if (backbuffer.size() != (size_t)width * height)
             backbuffer.assign((size_t)width * height, 0xFF000000u);
@@ -102,7 +125,27 @@ void dev_present(Machine& m, const Method& mm) {
     m.ret(mm.nargs, 0);
 }
 void dev_set_fvf(Machine& m, const Method& mm) {
-    g_state.fvf = m.arg(1); // state-tracker input; consumed by DrawPrimitiveUP
+    g_state.fvf = m.arg(1); // state-tracker input; consumed by the draw path
+    m.ret(mm.nargs, 0);
+}
+void dev_set_transform(Machine& m, const Method& mm) {
+    // SetTransform(this, D3DTRANSFORMSTATETYPE State, D3DMATRIX* pMatrix).
+    uint32_t which = m.arg(1), p = m.arg(2);
+    float* dst = which == 256 /*WORLD*/ ? g_state.world
+               : which == 2 /*VIEW*/    ? g_state.view
+               : which == 3 /*PROJECTION*/ ? g_state.proj
+                                           : nullptr;
+    if (dst)
+        for (int i = 0; i < 16; i++) dst[i] = read_f32(m, p + 4 * i);
+    m.ret(mm.nargs, 0);
+}
+void dev_set_viewport(Machine& m, const Method& mm) {
+    // SetViewport(this, D3DVIEWPORT9*): {DWORD X,Y,Width,Height; float MinZ,MaxZ}.
+    uint32_t p = m.arg(1);
+    g_state.vp_x = (float)m.read32(p + 0);
+    g_state.vp_y = (float)m.read32(p + 4);
+    g_state.vp_w = (float)m.read32(p + 8);
+    g_state.vp_h = (float)m.read32(p + 12);
     m.ret(mm.nargs, 0);
 }
 
@@ -159,9 +202,27 @@ uint64_t raster_triangle(State& s, const Vtx& a, const Vtx& b, const Vtx& c) {
 // bounding attacker-controlled work regardless of count / triangle size.
 constexpr uint32_t kMaxPrimitives = 4'000'000;
 
-// Read one XYZRHW|DIFFUSE vertex from guest memory (x at +0, y +4, color +16).
-inline Vtx read_vtx(Machine& m, uint32_t p) {
-    return {read_f32(m, p + 0), read_f32(m, p + 4), m.read32(p + 16)};
+// Read one vertex at `p` and produce a SCREEN-space Vtx. XYZRHW vertices are
+// already pre-transformed (x,y in pixels); XYZ vertices go through wvp then the
+// perspective divide and viewport map. Color from DIFFUSE, else opaque white.
+Vtx vertex_screen(Machine& m, uint32_t p, const float* wvp) {
+    const uint32_t fvf = g_state.fvf;
+    if (fvf & FVF_XYZRHW) { // pre-transformed: color follows x,y,z,rhw (+16)
+        uint32_t col = (fvf & FVF_DIFFUSE) ? m.read32(p + 16) : 0xFFFFFFFFu;
+        return {read_f32(m, p + 0), read_f32(m, p + 4), col};
+    }
+    // Untransformed XYZ: clip = [x,y,z,1] * wvp.
+    float in[4] = {read_f32(m, p + 0), read_f32(m, p + 4), read_f32(m, p + 8), 1.0f};
+    float clip[4];
+    for (int j = 0; j < 4; j++)
+        clip[j] = in[0] * wvp[0 * 4 + j] + in[1] * wvp[1 * 4 + j] +
+                  in[2] * wvp[2 * 4 + j] + in[3] * wvp[3 * 4 + j];
+    float w = clip[3] == 0.0f ? 1e-6f : clip[3];
+    float nx = clip[0] / w, ny = clip[1] / w;
+    float sx = (nx * 0.5f + 0.5f) * g_state.vp_w + g_state.vp_x;
+    float sy = (0.5f - ny * 0.5f) * g_state.vp_h + g_state.vp_y; // y flips
+    uint32_t col = (fvf & FVF_DIFFUSE) ? m.read32(p + 12) : 0xFFFFFFFFu;
+    return {sx, sy, col};
 }
 
 // Rasterize `count` triangles whose vertex j lives at base + (start+j)*stride.
@@ -169,18 +230,26 @@ inline Vtx read_vtx(Machine& m, uint32_t p) {
 // vertex buffer). Enforces the primitive cap and the fill budget.
 void draw_tris(Machine& m, uint32_t count, uint32_t base, uint32_t start,
                uint32_t stride) {
-    if (g_state.fvf != (0x004 | 0x040) /*XYZRHW|DIFFUSE*/)
-        throw MachineError{"draw: only FVF XYZRHW|DIFFUSE supported"};
+    const uint32_t fvf = g_state.fvf;
+    // Position is required; DIFFUSE optional. Other components (normals, tex
+    // coords, > stream-0) aren't in the layout yet — throw named, add on demand.
+    bool ok = (fvf & (FVF_XYZ | FVF_XYZRHW)) &&
+              !(fvf & ~(FVF_XYZ | FVF_XYZRHW | FVF_DIFFUSE));
+    if (!ok)
+        throw MachineError{"draw: unsupported FVF 0x" + std::to_string(fvf)};
     if (count > kMaxPrimitives)
         throw MachineError{"draw: PrimitiveCount too large"};
     g_state.ensure_bb();
+    float wv[16], wvp[16];
+    mat_mul(g_state.world, g_state.view, wv);
+    mat_mul(wv, g_state.proj, wvp);
     const uint64_t fill_budget = 64ull * g_state.width * g_state.height;
     uint64_t filled = 0;
     auto va = [&](uint32_t j) { return base + (start + j) * stride; };
     for (uint32_t t = 0; t < count; t++) {
-        filled += raster_triangle(g_state, read_vtx(m, va(3 * t)),
-                                  read_vtx(m, va(3 * t + 1)),
-                                  read_vtx(m, va(3 * t + 2)));
+        filled += raster_triangle(g_state, vertex_screen(m, va(3 * t), wvp),
+                                  vertex_screen(m, va(3 * t + 1), wvp),
+                                  vertex_screen(m, va(3 * t + 2), wvp));
         if (filled > fill_budget) break; // bound total attacker-controlled fill
     }
 }
@@ -264,8 +333,8 @@ constexpr Method kDeviceVtbl[] = {
     {"GetRenderTarget", 0, nullptr}, {"SetDepthStencilSurface", 0, nullptr},
     {"GetDepthStencilSurface", 0, nullptr}, {"BeginScene", 1, ret_ok},
     {"EndScene", 1, ret_ok}, {"Clear", 7, dev_clear},
-    {"SetTransform", 0, nullptr}, {"GetTransform", 0, nullptr},
-    {"MultiplyTransform", 0, nullptr}, {"SetViewport", 0, nullptr},
+    {"SetTransform", 3, dev_set_transform}, {"GetTransform", 0, nullptr},
+    {"MultiplyTransform", 0, nullptr}, {"SetViewport", 2, dev_set_viewport},
     {"GetViewport", 0, nullptr}, {"SetMaterial", 0, nullptr},
     {"GetMaterial", 0, nullptr}, {"SetLight", 0, nullptr},
     {"GetLight", 0, nullptr}, {"LightEnable", 0, nullptr},
@@ -317,6 +386,9 @@ void d3d9_create_device(Machine& m, const Method& mm) {
     if (w && w <= 4096) g_state.width = w;
     if (h && h <= 4096) g_state.height = h;
     g_state.ensure_bb();
+    g_state.vp_x = g_state.vp_y = 0; // default viewport = full backbuffer
+    g_state.vp_w = (float)g_state.width;
+    g_state.vp_h = (float)g_state.height;
     uint32_t dev = m.create_com_instance(g_state.device_vtbl, OBJ_STATE_BYTES);
     m.write32(dev + OBJ_REFCOUNT, 1);
     m.write32(ppOut, dev);
