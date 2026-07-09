@@ -475,6 +475,18 @@ inline constexpr uint16_t X87_C2 = 1 << 10;
 inline constexpr uint16_t X87_C3 = 1 << 14;
 
 inline double& fst(Cpu& c, unsigned i) { return c.x87.st[(c.x87.top + i) & 7]; }
+
+// Round a double to integer per the control word's RC field (bits 10-11), as
+// FIST/FISTP/FRNDINT do. C's (int)float compiles to fistp under RC=11 (truncate)
+// via the _ftol helper, so honoring RC is load-bearing — not a rounding nicety.
+inline int64_t x87_round(double v, uint16_t control) {
+    switch ((control >> 10) & 3) {
+        case 0: return (int64_t)std::nearbyint(v); // 00 nearest-even (host default)
+        case 1: return (int64_t)std::floor(v);     // 01 toward -inf
+        case 2: return (int64_t)std::ceil(v);      // 10 toward +inf
+        default: return (int64_t)std::trunc(v);    // 11 toward zero (truncate)
+    }
+}
 inline void fpush(Cpu& c, double v) {
     c.x87.top = (c.x87.top - 1) & 7;
     c.x87.tag_empty &= ~(1u << c.x87.top);
@@ -511,6 +523,15 @@ inline double farith(unsigned idx, double a, double b) {
 }
 
 // Execute one x87 instruction (opcodes 0xD8..0xDF). `in` is already decoded.
+//
+// KNOWN LIMITATIONS (Codex-reviewed, acceptable at tier 0):
+//  - Precision control (control-word PC) is ignored: arithmetic is always full
+//    f64, so code that sets PC=24/53-bit sees extra precision. Same class as the
+//    f64-vs-80-bit modeling choice documented on X87; single-player tolerates it.
+//  - Stack over/underflow tags are tracked but not enforced: using an empty
+//    register reads the stale physical slot instead of raising #IS / yielding
+//    the QNaN indefinite. Well-formed code (which balances its stack) is
+//    unaffected; only malformed/error-probing sequences diverge.
 void execX87(Cpu& c, const Bus& b, const Inst& in) {
     c.x87.used = true;
     const uint8_t op = in.op;
@@ -550,10 +571,12 @@ void execX87(Cpu& c, const Bus& b, const Inst& in) {
                 switch (reg) {
                     case 0: fpush(c, (double)(int32_t)rdW(b, a, 4)); return; // fild m32
                     case 2: // fist m32
-                        wrW(b, a, 4, (uint32_t)(int32_t)llrint(fst(c, 0)));
+                        wrW(b, a, 4,
+                            (uint32_t)(int32_t)x87_round(fst(c, 0), c.x87.control));
                         return;
                     case 3: // fistp m32
-                        wrW(b, a, 4, (uint32_t)(int32_t)llrint(fst(c, 0)));
+                        wrW(b, a, 4,
+                            (uint32_t)(int32_t)x87_round(fst(c, 0), c.x87.control));
                         fpop(c);
                         return;
                 }
@@ -570,12 +593,13 @@ void execX87(Cpu& c, const Bus& b, const Inst& in) {
                 switch (reg) {
                     case 0: fpush(c, (double)(int16_t)rdW(b, a, 2)); return; // fild m16
                     case 3: // fistp m16
-                        wrW(b, a, 2, (uint16_t)(int16_t)llrint(fst(c, 0)));
+                        wrW(b, a, 2,
+                            (uint16_t)(int16_t)x87_round(fst(c, 0), c.x87.control));
                         fpop(c);
                         return;
                     case 5: fpush(c, (double)(int64_t)rd64(b, a)); return; // fild m64
                     case 7: // fistp m64
-                        wr64(b, a, (uint64_t)llrint(fst(c, 0)));
+                        wr64(b, a, (uint64_t)x87_round(fst(c, 0), c.x87.control));
                         fpop(c);
                         return;
                 }
@@ -659,8 +683,8 @@ void execX87(Cpu& c, const Bus& b, const Inst& in) {
                     throw UdFault{};
                 case 6: // D9 F0..F7: transcendental / stack control
                     switch (i) {
-                        case 6: c.x87.top = (c.x87.top + 1) & 7; return;   // fdecstp (top++)
-                        case 7: c.x87.top = (c.x87.top - 1) & 7; return;   // fincstp (top--)
+                        case 6: c.x87.top = (c.x87.top - 1) & 7; return;   // fdecstp: TOP-1
+                        case 7: c.x87.top = (c.x87.top + 1) & 7; return;   // fincstp: TOP+1
                     }
                     throw UdFault{};
                 case 7: // D9 F8..FF: fsqrt/frndint/fsin/fcos/fscale/fsincos
@@ -669,7 +693,9 @@ void execX87(Cpu& c, const Bus& b, const Inst& in) {
                         case 3: { double s = std::sin(fst(c, 0));          // fsincos
                                   fst(c, 0) = std::cos(fst(c, 0)); fpush(c, s);
                                   return; }
-                        case 4: fst(c, 0) = std::nearbyint(fst(c, 0)); return; // frndint
+                        case 4: // frndint (honors RC like fist)
+                            fst(c, 0) = (double)x87_round(fst(c, 0), c.x87.control);
+                            return;
                         case 5: fst(c, 0) = std::ldexp(                    // fscale
                                     fst(c, 0), (int)std::trunc(fst(c, 1)));
                                 return;
