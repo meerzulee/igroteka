@@ -153,6 +153,10 @@ skirmish in under 10 minutes, no docs.
       reading `window.CafeUdp.status()`. Ping source = **DataChannel RTT** from the
       bridge (`getStats()` candidate-pair `currentRoundTripTime`, polled 2s) — no
       engine change needed, so it's live now. Player names are HTML-escaped.
+> **Sequencing decision (2026-07-10):** fix the in-game disconnection stall FIRST
+> (matches must play through), THEN build mid-game rejoin on top. Rejoin depends on
+> a stable, non-stalling in-match transport anyway, so this order is also technical.
+
 - [ ] **Disconnection Menu / mid-match lockstep stall** (observed 2026-07-10: match
       loads + renders, then the engine pops "DISCONNECTION MENU" mid-game). Root
       cause: the deterministic-lockstep turn barrier can't advance because a peer's
