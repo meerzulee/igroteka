@@ -78,18 +78,18 @@
 
     <div class="window">
       <div class="title-bar">
-        <div class="title-bar-text">Private Party</div>
+        <div class="title-bar-text">Multiplayer Party</div>
       </div>
       <div class="window-body">
 
-        <!-- create / join forms -->
+        <!-- create / join / browse -->
         <div id="forms">
-          <p class="lead">Gather your friends in a password-protected room,
-            then launch straight into the battle.</p>
+          <p class="lead">Gather your friends, then launch straight into the battle.</p>
 
           <menu role="tablist" class="justified">
-            <button id="tabCreate" type="button" aria-selected="true" aria-controls="tabPanel">Create a party</button>
-            <button id="tabJoin" type="button" aria-selected="false" aria-controls="tabPanel">Join a party</button>
+            <button id="tabCreate" type="button" aria-selected="true" aria-controls="tabPanel">Create</button>
+            <button id="tabJoin" type="button" aria-selected="false" aria-controls="tabPanel">Join by code</button>
+            <button id="tabPublic" type="button" aria-selected="false" aria-controls="tabPanel">Public games</button>
           </menu>
           <div role="tabpanel" id="tabPanel">
             <form id="form" autocomplete="off">
@@ -102,18 +102,27 @@
                 <input id="code" maxlength="16" placeholder="the code your host shared"
                        autocapitalize="off" autocomplete="off" spellcheck="false">
               </div>
-              <div class="field-row-stacked">
-                <label for="pass">Party password</label>
+              <div class="field-row-stacked" id="passRow">
+                <label for="pass">Party password <span id="passHint" style="color:#777;font-weight:normal"></span></label>
                 <input id="pass" type="password" maxlength="128"
                        placeholder="the shared secret" autocomplete="new-password">
+              </div>
+              <!-- public browser (shown on the Public tab) -->
+              <div id="pubBox" class="hidden">
+                <div class="field-row" style="justify-content:space-between;margin:2px 0 4px">
+                  <label style="margin:0">Open games anyone can join</label>
+                  <button id="refreshPub" type="button">↻ Refresh</button>
+                </div>
+                <ul class="tree-view" id="pubList" style="height:150px;overflow-y:auto;margin:0"></ul>
               </div>
               <div class="btnrow"><button id="go" type="submit">Create Party</button></div>
               <div id="err" class="err"></div>
             </form>
           </div>
 
-          <p class="note">A leaked game link is <b>useless without the password</b> —
-            the room only opens for people who prove they know it.</p>
+          <p class="note" id="createNote"><b>Password</b> = private party (only people
+            with the password get in). <b>No password</b> = public game, listed for
+            anyone to join.</p>
         </div>
 
         <!-- lobby: gather, chat, moderate, launch -->
@@ -126,7 +135,7 @@
           <p id="shareLink" class="share"></p>
 
           <div class="field-row-stacked" style="margin-top:8px">
-            <label>Players</label>
+            <label>Players <span id="playerCount" style="color:#555;font-weight:normal"></span></label>
             <ul class="tree-view" id="roster" style="height:86px;overflow-y:auto;margin:0"></ul>
           </div>
 
@@ -147,7 +156,7 @@
             <button id="startGame" type="button" class="hidden">Start Game</button>
             <span id="waitMsg" class="hidden" style="color:#555">waiting for the host to start…</span>
           </div>
-          <div class="backrow"><a href="#" id="leaveLobby">← leave the party</a></div>
+          <div class="btnrow" style="margin-top:12px"><button id="leaveLobby" type="button">Leave party</button></div>
         </div>
 
       </div>

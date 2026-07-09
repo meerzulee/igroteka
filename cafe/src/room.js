@@ -31,6 +31,10 @@ const TOKEN_TTL_SEC = 1800; // 30 min: outlives a human-paced gather + the
                             // for in-session reconnects.
 const AUTH_MAX_FAILS = 5;   // wrong-password attempts per IP before a lockout
 const AUTH_LOCKOUT_MS = 60_000;
+const ROOM_TTL_MS = 2 * 60 * 60 * 1000;  // wipe an abandoned room's stored state
+                                         // (verifier/secret/ban list) after 2h idle
+const EMPTY_TTL_MS = 15 * 60 * 1000;     // once the last player leaves, hold the
+                                         // room 15 min (host may rejoin) then wipe
 
 export class LobbyRoom extends DurableObject {
   // ---- RPC: create a password-protected party (called by the Worker /party) ----
@@ -38,22 +42,43 @@ export class LobbyRoom extends DurableObject {
   // PBKDF2 verifier + a per-room HMAC secret, binds the creator as host, and
   // returns a signed host token. 409 if a party already lives here (never clobber
   // a live party — protects against a code collision).
-  async createParty(code, password) {
+  // password may be empty => an OPEN party: no verifier, anyone who has the
+  // (unguessable, server-generated) code joins — the code itself is the secret,
+  // like a meeting link. A non-empty password => the room also demands it.
+  async createParty(code, password, name) {
     if (await this.ctx.storage.get("party"))
       return { error: "party already exists", status: 409 };
-    const salt = randomBytes(16);
-    const verifier = await deriveVerifier(password, salt, DEFAULT_ITERS);
+    const open = !password;
+    const party = { code, open, name: (name || "Party").slice(0, MAX_NAME), createdAt: Date.now() };
+    if (!open) {
+      const salt = randomBytes(16);
+      party.salt = b64uEncode(salt);
+      party.iters = DEFAULT_ITERS;
+      party.verifier = b64uEncode(await deriveVerifier(password, salt, DEFAULT_ITERS));
+    }
     const secret = randomBytes(32);
-    await this.ctx.storage.put("party", {
-      code,
-      salt: b64uEncode(salt),
-      iters: DEFAULT_ITERS,
-      verifier: b64uEncode(verifier),
-      createdAt: Date.now(),
-    });
+    await this.ctx.storage.put("party", party);
     await this.ctx.storage.put("secret", b64uEncode(secret));
+    // Safety net: if the creator never connects, this alarm reaps the room.
+    await this.ctx.storage.setAlarm(Date.now() + ROOM_TTL_MS);
+    // Open (no-password) rooms are PUBLIC — list them in the directory so others
+    // can browse and join. Password rooms stay private (never listed).
+    if (open) await this._dirSync(party, 0);
     const token = await mintToken(secret, { room: code, role: "host", ttlSec: TOKEN_TTL_SEC });
-    return { token, role: "host" };
+    return { token, role: "host", open };
+  }
+
+  // Push this open room's live state into the public-lobby directory (a single
+  // Directory DO). count = players currently connected.
+  async _dirSync(party, count) {
+    try {
+      await this.env.DIRECTORY.getByName("global").upsert(party.code, {
+        name: party.name, players: count, max: MAX_PLAYERS,
+      });
+    } catch {}
+  }
+  async _dirRemove(code) {
+    try { await this.env.DIRECTORY.getByName("global").remove(code); } catch {}
   }
 
   // ---- RPC: authenticate into an existing party (called by the Worker /auth) ----
@@ -62,6 +87,18 @@ export class LobbyRoom extends DurableObject {
   async authenticate(code, password, ip) {
     const party = await this.ctx.storage.get("party");
     if (!party) return { error: "no such party", status: 404 };
+
+    // Full rooms fail here so the joiner never gets a dead token (the WS gate
+    // also caps, but this gives a clean, readable reason).
+    if (this.ctx.getWebSockets().length >= MAX_PLAYERS)
+      return { error: `room is full (${MAX_PLAYERS} players)`, status: 409, full: true };
+
+    // Open room: the code is the only credential — no password to check.
+    if (party.open) {
+      const secret = b64uDecode(await this.ctx.storage.get("secret"));
+      const token = await mintToken(secret, { room: party.code, role: "guest", ttlSec: TOKEN_TTL_SEC });
+      return { token, role: "guest" };
+    }
 
     const rlKey = "af:" + ip;
     const now = Date.now();
@@ -74,13 +111,27 @@ export class LobbyRoom extends DurableObject {
       rl.n += 1;
       if (rl.n >= AUTH_MAX_FAILS) { rl.until = now + AUTH_LOCKOUT_MS; rl.n = 0; }
       await this.ctx.storage.put(rlKey, rl);
-      return { error: "wrong password", status: 403 };
+      return { error: password ? "wrong password" : "this party needs a password", status: 403 };
     }
     await this.ctx.storage.delete(rlKey); // reset the counter on success
 
     const secret = b64uDecode(await this.ctx.storage.get("secret"));
     const token = await mintToken(secret, { room: party.code, role: "guest", ttlSec: TOKEN_TTL_SEC });
     return { token, role: "guest" };
+  }
+
+  // ---- inactivity cleanup ----
+  // While anyone is connected, keep pushing the reap time out. Once the room is
+  // empty (and stays empty past the alarm), wipe all stored state so abandoned
+  // rooms don't accumulate verifiers/secrets/ban lists forever.
+  async alarm() {
+    if (this.ctx.getWebSockets().length > 0) {
+      await this.ctx.storage.setAlarm(Date.now() + ROOM_TTL_MS);
+      return;
+    }
+    const party = await this.ctx.storage.get("party");
+    if (party && party.open) await this._dirRemove(party.code);
+    await this.ctx.storage.deleteAll();
   }
 
   // ---- WebSocket upgrade (the Worker forwards the client Request here) ----
@@ -142,6 +193,8 @@ export class LobbyRoom extends DurableObject {
       })
     );
     this.broadcastRoster();
+    // Keep the public directory's player count live.
+    if (party && party.open) await this._dirSync(party, this.ctx.getWebSockets().length);
 
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -251,6 +304,14 @@ export class LobbyRoom extends DurableObject {
       }
     }
     this.broadcastRoster(ws);
+
+    // Public directory upkeep + inactivity reap.
+    if (party && party.open) {
+      if (remaining.length) await this._dirSync(party, remaining.length);
+      else await this._dirRemove(party.code); // last one out — delist immediately
+    }
+    if (!remaining.length && party)
+      await this.ctx.storage.setAlarm(Date.now() + EMPTY_TTL_MS); // wipe state soon
   }
 
   find(id) {

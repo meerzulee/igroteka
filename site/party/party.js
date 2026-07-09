@@ -30,15 +30,18 @@
   if (EMBED) document.body.classList.add("embed");
 
   var $ = function (id) { return document.getElementById(id); };
-  var mode = "create"; // or "join"
+  var mode = "create"; // "create" | "join" | "public"
 
   var el = {
     forms: $("forms"), form: $("form"), name: $("name"), code: $("code"),
-    codeRow: $("codeRow"), pass: $("pass"), go: $("go"), err: $("err"),
-    tabCreate: $("tabCreate"), tabJoin: $("tabJoin"),
+    codeRow: $("codeRow"), pass: $("pass"), passRow: $("passRow"), passHint: $("passHint"),
+    go: $("go"), err: $("err"), createNote: $("createNote"),
+    tabCreate: $("tabCreate"), tabJoin: $("tabJoin"), tabPublic: $("tabPublic"),
+    pubBox: $("pubBox"), pubList: $("pubList"), refreshPub: $("refreshPub"),
     lobbyPanel: $("lobbyPanel"), createdCode: $("createdCode"),
     copyCode: $("copyCode"), shareLink: $("shareLink"),
-    roster: $("roster"), chatlog: $("chatlog"), chatMsg: $("chatMsg"),
+    roster: $("roster"), playerCount: $("playerCount"),
+    chatlog: $("chatlog"), chatMsg: $("chatMsg"),
     chatSend: $("chatSend"), readyBox: $("readyBox"),
     startGame: $("startGame"), waitMsg: $("waitMsg"), leaveLobby: $("leaveLobby"),
   };
@@ -83,16 +86,24 @@
 
   function setMode(m) {
     mode = m;
-    var join = m === "join";
     // xp.css tabs style off aria-selected
-    el.tabCreate.setAttribute("aria-selected", String(!join));
-    el.tabJoin.setAttribute("aria-selected", String(join));
-    el.codeRow.classList.toggle("hidden", !join);
-    el.go.textContent = join ? "Join Party" : "Create Party";
+    el.tabCreate.setAttribute("aria-selected", String(m === "create"));
+    el.tabJoin.setAttribute("aria-selected", String(m === "join"));
+    el.tabPublic.setAttribute("aria-selected", String(m === "public"));
+    el.codeRow.classList.toggle("hidden", m !== "join");
+    el.passRow.classList.toggle("hidden", m === "public");
+    el.pubBox.classList.toggle("hidden", m !== "public");
+    el.go.classList.toggle("hidden", m === "public"); // Public joins via the list
+    el.createNote.classList.toggle("hidden", m !== "create");
+    el.go.textContent = m === "join" ? "Join Party" : "Create Party";
+    el.passHint.textContent = m === "create" ? "(optional — blank = public game)" : "(if private)";
     el.err.textContent = "";
+    if (m === "public") loadPublic();
   }
   el.tabCreate.onclick = function () { setMode("create"); };
   el.tabJoin.onclick = function () { setMode("join"); };
+  el.tabPublic.onclick = function () { setMode("public"); };
+  el.refreshPub.onclick = function () { loadPublic(); };
 
   // A shared link (/party?code=ABC) prefills the code and flips to Join — but
   // never carries the password, so the link alone grants nothing. Default to
@@ -150,17 +161,19 @@
     var name = el.name.value.trim();
     var pass = el.pass.value;
     if (!name) return fail("Enter a name.");
-    if (!pass || pass.length < 4) return fail("Password must be at least 4 characters.");
+    // Password is optional (blank = public game). If given, it must be >= 4.
+    if (mode === "create" && pass && pass.length < 4)
+      return fail("Password must be at least 4 characters (or leave it blank for a public game).");
 
     el.go.disabled = true;
     el.go.textContent = "Working…";
 
     try {
       if (mode === "create") {
-        var r = await post("/party", { password: pass });
+        var r = await post("/party", { password: pass, name: name });
         if (!r.ok) return failDialog(r.data.error || "Could not create the party.");
         stash(r.data.roomCode, r.data.token, r.data.role);
-        enterLobby(r.data.roomCode, r.data.role, r.data.token);
+        enterLobby(r.data.roomCode, r.data.role, r.data.token, r.data.open);
       } else {
         var code = el.code.value.trim();
         if (!code) return fail("Enter the room code your host shared.");
@@ -173,6 +186,71 @@
       failDialog("Could not reach the party server. Check your connection and try again.");
     }
   };
+
+  // ---- public lobby directory -----------------------------------------------
+  async function loadPublic() {
+    el.pubList.textContent = "";
+    var li = document.createElement("li");
+    li.textContent = "loading…";
+    li.style.color = "#777";
+    el.pubList.appendChild(li);
+    try {
+      var res = await fetch(CAFE + "/lobbies");
+      var data = await res.json();
+      renderPublic(data.lobbies || []);
+    } catch (e) {
+      el.pubList.textContent = "";
+      var err = document.createElement("li");
+      err.textContent = "could not load public games";
+      err.style.color = "#c00";
+      el.pubList.appendChild(err);
+    }
+  }
+
+  function renderPublic(lobbies) {
+    el.pubList.textContent = "";
+    if (!lobbies.length) {
+      var empty = document.createElement("li");
+      empty.style.color = "#777";
+      empty.textContent = "No public games right now — create one!";
+      el.pubList.appendChild(empty);
+      return;
+    }
+    lobbies.forEach(function (lob) {
+      var li = document.createElement("li");
+      li.style.cssText = "display:flex;align-items:center;gap:8px;padding:2px";
+      var nm = document.createElement("span");
+      nm.style.flex = "1";
+      nm.textContent = lob.name;                    // textContent — untrusted
+      var cnt = document.createElement("span");
+      cnt.style.color = "#555";
+      cnt.textContent = lob.players + "/" + lob.max;
+      var join = document.createElement("button");
+      join.type = "button";
+      join.textContent = "Join";
+      var full = lob.players >= lob.max;
+      join.disabled = full;
+      if (full) cnt.textContent += " full";
+      join.onclick = function () { joinPublic(lob.code); };
+      li.appendChild(nm); li.appendChild(cnt); li.appendChild(join);
+      el.pubList.appendChild(li);
+    });
+  }
+
+  async function joinPublic(code) {
+    if (!el.name.value.trim()) { setMode("create"); return fail("Enter a name first."); }
+    try {
+      var a = await post("/room/" + encodeURIComponent(code) + "/auth", { password: "" });
+      if (!a.ok) {
+        if (a.data.full) { failDialog("That game just filled up."); return loadPublic(); }
+        return failDialog(a.data.error || "Could not join that game.");
+      }
+      stash(a.data.roomCode, a.data.token, a.data.role);
+      enterLobby(a.data.roomCode, a.data.role, a.data.token);
+    } catch (e) {
+      failDialog("Could not reach the party server.");
+    }
+  }
 
   // ---- lobby ----------------------------------------------------------------
   // Same room WS the game itself uses; here it only carries roster/chat/kick/
@@ -200,6 +278,7 @@
 
   function renderRoster(players) {
     el.roster.textContent = "";
+    el.playerCount.textContent = "(" + players.length + "/8)";
     players.forEach(function (p) {
       var li = document.createElement("li");
       var who = document.createElement("span");
@@ -254,7 +333,7 @@
     if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
   }
 
-  function enterLobby(code, role, token) {
+  function enterLobby(code, role, token, open) {
     el.forms.classList.add("hidden");
     el.lobbyPanel.classList.remove("hidden");
     el.createdCode.value = code;
@@ -264,7 +343,9 @@
 
     if (iAmHost) {
       var link = location.origin + "/party?code=" + encodeURIComponent(code);
-      el.shareLink.textContent = "Share link (code only): ";
+      el.shareLink.textContent = open
+        ? "Public game — anyone can find it in the list, or use this link: "
+        : "Private — share the code + password, or this link (code only): ";
       var a = document.createElement("a");
       a.href = link;
       a.textContent = link;

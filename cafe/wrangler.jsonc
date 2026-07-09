@@ -6,12 +6,14 @@
   "durable_objects": {
     "bindings": [
       { "name": "LOBBY", "class_name": "LobbyRoom" },
-      { "name": "THROTTLE", "class_name": "Throttle" }
+      { "name": "THROTTLE", "class_name": "Throttle" },
+      { "name": "DIRECTORY", "class_name": "Directory" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["LobbyRoom"] },
-    { "tag": "v2", "new_sqlite_classes": ["Throttle"] }
+    { "tag": "v2", "new_sqlite_classes": ["Throttle"] },
+    { "tag": "v3", "new_sqlite_classes": ["Directory"] }
   ],
   "observability": { "enabled": true },
   "routes": [{ "pattern": "cafe-nw.mrz.sh", "custom_domain": true }]

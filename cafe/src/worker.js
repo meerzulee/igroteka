@@ -17,10 +17,11 @@
 
 import { LobbyRoom } from "./room.js";
 import { Throttle } from "./throttle.js";
+import { Directory } from "./directory.js";
 import { getIceServers } from "./turn.js";
 import { newRoomCode } from "./auth.js";
 
-export { LobbyRoom, Throttle };
+export { LobbyRoom, Throttle, Directory };
 
 const CORS = {
   "access-control-allow-origin": "*",
@@ -37,10 +38,12 @@ const json = (obj, status = 200) =>
 const MIN_PASSWORD = 4;
 const PARTY_CREATE_LIMIT = 20; // per IP per hour — runaway-loop guard, not security
 
-async function readPassword(request) {
+async function readBody(request) {
   const body = await request.json().catch(() => ({}));
-  const password = typeof body?.password === "string" ? body.password : "";
-  return password;
+  return {
+    password: typeof body?.password === "string" ? body.password : "",
+    name: typeof body?.name === "string" ? body.name : "",
+  };
 }
 
 export default {
@@ -54,27 +57,34 @@ export default {
 
     if (url.pathname === "/ice") return json({ iceServers: await getIceServers(env) });
 
-    // POST /party — create a new private party. Server picks the room code (high
-    // entropy, unguessable) so parties can't be squatted or code-guessed.
+    // GET /lobbies — the public (no-password) lobby directory.
+    if (url.pathname === "/lobbies") {
+      const rooms = await env.DIRECTORY.getByName("global").list();
+      return json({ lobbies: rooms });
+    }
+
+    // POST /party — create a party. Server picks the room code (high entropy,
+    // unguessable). An empty password makes it a PUBLIC lobby (listed, code = the
+    // only credential); a password makes it PRIVATE (never listed, token-gated).
     if (url.pathname === "/party" && request.method === "POST") {
       const allowed = await env.THROTTLE.getByName("global").hit(ip, PARTY_CREATE_LIMIT, 3_600_000);
       if (!allowed) return json({ error: "rate limited — try later" }, 429);
 
-      const password = await readPassword(request);
-      if (password.length < MIN_PASSWORD)
+      const { password, name } = await readBody(request);
+      if (password && password.length < MIN_PASSWORD)
         return json({ error: `password must be at least ${MIN_PASSWORD} characters` }, 400);
 
       const code = newRoomCode();
-      const res = await env.LOBBY.getByName(code).createParty(code, password);
+      const res = await env.LOBBY.getByName(code).createParty(code, password, name);
       if (res.error) return json({ error: res.error }, res.status || 400);
-      return json({ roomCode: code, token: res.token, role: res.role });
+      return json({ roomCode: code, token: res.token, role: res.role, open: res.open });
     }
 
-    // POST /room/<code>/auth — prove the password, get a join token.
+    // POST /room/<code>/auth — get a join token. Public rooms ignore the
+    // password; private rooms require it.
     const a = url.pathname.match(/^\/room\/([A-Za-z0-9_-]{1,64})\/auth$/);
     if (a && request.method === "POST") {
-      const password = await readPassword(request);
-      if (!password) return json({ error: "password required" }, 400);
+      const { password } = await readBody(request);
       const res = await env.LOBBY.getByName(a[1]).authenticate(a[1], password, ip);
       if (res.error) return json({ error: res.error }, res.status || 403);
       return json({ roomCode: a[1], token: res.token, role: res.role });
