@@ -228,6 +228,28 @@
     // localhost dev defaults to the local wrangler cafe, like the party page
     var isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
     window.CAFE_URL   = qs.get('cafe') || (isLocal ? 'http://localhost:8799' : 'https://cafe-nw.mrz.sh');
+
+    // Bounce back to the party page with a reason — it shows the XP dialog.
+    var bail = function (why) {
+      localStorage.removeItem('cafe-token:' + room);
+      localStorage.removeItem('cafe-role:' + room);
+      location.replace('/party?code=' + encodeURIComponent(room) + '&err=' + why);
+    };
+    // Fail fast on dead launch links: probe the room BEFORE the engine boots
+    // (the 10MB download + boot + autopilot would otherwise sit on the splash
+    // for the full 90s backstop waiting for a lobby that will never form).
+    // Network errors skip the check — the probe is an optimization, not a gate.
+    fetch(window.CAFE_URL + '/room/' + encodeURIComponent(room) + '/info')
+      .then(function (r) { return r.json(); })
+      .then(function (info) {
+        if (!info.party) return bail('gone');       // room reaped / never existed
+        if (role === 'guest' && info.players === 0) // guests launch INTO a party;
+          return bail('empty');                      // nobody there = stale link
+      })
+      .catch(function () { /* cafe unreachable — let the normal flow try */ });
+    // Stale/expired token: the lobby socket gets rejected before "welcome" —
+    // the bridge calls this hook instead of leaving the splash hanging.
+    window.onCafeAuthFailed = function () { bail('expired'); };
     window.CAFE_ROOM  = room;
     window.CAFE_NAME  = qs.get('player') || localStorage.getItem('cafe-name') || 'General';
     window.CAFE_TOKEN = token;

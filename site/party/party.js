@@ -52,6 +52,23 @@
     (EMBED ? window.top : window).location.href = url;
   }
 
+  // Bounced back from a game launch with a reason (see the play page's bail()).
+  // Shown BEFORE the install gate so the real reason (room gone / expired) wins
+  // for someone who clearly had a launch link.
+  var ERR_MSGS = {
+    gone: "That party no longer exists — it may have timed out after everyone " +
+          "left. Create a new one, or ask the host for a fresh code.",
+    empty: "Nobody is in that party anymore. Gather here first, then start the " +
+           "game together.",
+    expired: "Your party session has expired. Enter the password to rejoin.",
+  };
+  var errWhy = params.get("err");
+  if (errWhy && ERR_MSGS[errWhy]) {
+    XpDialog.error(ERR_MSGS[errWhy], { title: "Multiplayer Party", id: "party-err" });
+    history.replaceState(null, "", location.pathname +
+      location.search.replace(/([?&])err=[^&]*/, "$1").replace(/[?&]$/, ""));
+  }
+
   // Multiplayer requires the game installed on this device — you can't join a
   // match without the files. The Igroteka desktop only surfaces this page once
   // installed, but a shared /party link could land an uninstalled visitor here,
@@ -111,6 +128,8 @@
   var preCode = params.get("code");
   if (preCode) { el.code.value = preCode.trim(); setMode("join"); }
   else setMode("create");
+  // 'gone' = the room is dead; nudge to Create instead of a doomed rejoin.
+  if (errWhy === "gone") setMode("create");
 
   // Inline red text for local field validation; native XP error box for
   // server-reported failures (wrong password, rate limit, network down).

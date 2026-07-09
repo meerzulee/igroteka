@@ -80,6 +80,14 @@ export default {
       return json({ roomCode: code, token: res.token, role: res.role, open: res.open });
     }
 
+    // GET /room/<code>/info — liveness probe: does this party still exist,
+    // and is anyone in it? The game page fails fast on dead launch links
+    // instead of waiting on a lobby that will never form.
+    const inf = url.pathname.match(/^\/room\/([A-Za-z0-9_-]{1,64})\/info$/);
+    if (inf && request.method === "GET") {
+      return json(await env.LOBBY.getByName(inf[1]).info());
+    }
+
     // POST /room/<code>/auth — get a join token. Public rooms ignore the
     // password; private rooms require it.
     const a = url.pathname.match(/^\/room\/([A-Za-z0-9_-]{1,64})\/auth$/);

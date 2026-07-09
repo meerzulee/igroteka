@@ -120,6 +120,18 @@ export class LobbyRoom extends DurableObject {
     return { token, role: "guest" };
   }
 
+  // ---- RPC: liveness probe (called by the Worker GET /room/:code/info) ----
+  // Lets the game page fail fast BEFORE booting the engine when a launch link
+  // points at a room that no longer exists (reaped) or has emptied out.
+  async info() {
+    const party = await this.ctx.storage.get("party");
+    return {
+      party: !!party,
+      open: party ? !!party.open : false,
+      players: this.ctx.getWebSockets().length,
+    };
+  }
+
   // ---- inactivity cleanup ----
   // While anyone is connected, keep pushing the reap time out. Once the room is
   // empty (and stays empty past the alarm), wipe all stored state so abandoned

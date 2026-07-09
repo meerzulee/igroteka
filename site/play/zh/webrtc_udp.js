@@ -53,7 +53,15 @@
     var ws = new WebSocket(wsUrl);
     this.ws = ws;
     ws.onmessage = function (e) { self._onMsg(JSON.parse(e.data)); };
-    ws.onclose = function () { self.connected = false; self.log("signaling closed"); };
+    ws.onclose = function () {
+      // Closed before "welcome" = the gate rejected us (stale/expired token,
+      // kicked ban, full room). Tell the page so it can bail out of the splash
+      // instead of waiting on a lobby that will never form.
+      if (!self.connected && !self._welcomed && window.onCafeAuthFailed)
+        window.onCafeAuthFailed();
+      self.connected = false;
+      self.log("signaling closed");
+    };
     ws.onerror = function () { self.log("signaling error"); };
     return new Promise(function (res) { self._welcome = res; });
   };
@@ -66,6 +74,7 @@
       case "welcome":
         this.id = m.youAre; this.host = m.host; this.iceServers = m.iceServers || [];
         this.connected = true;
+        this._welcomed = true; // gate passed at least once — closes are network, not auth
         this.log("joined as " + this.id + (this.host ? " (host)" : ""));
         this._startPing();
         if (this._welcome) this._welcome(m);
