@@ -264,9 +264,11 @@ HLE, no Wine/no system emulator. **F1 done.**
 
 ### Phase F2 — Window (target: 3–4 weeks)
 
-- [ ] `u32web`: RegisterClass/CreateWindow (one canvas-backed window),
+- [~] `u32web`: RegisterClass/CreateWindow (one canvas-backed window),
       PeekMessage/GetMessage/DispatchMessage, **reverse thunk**: re-enter
-      interpreter at wndproc EIP with args on the guest stack
+      interpreter at wndproc EIP with args on the guest stack — reverse thunk
+      LIVE (`fortochka/runtime/machine.cpp` `call_guest`, `u32web/`). Headless
+      pump done; canvas window is F3.
 - [ ] Message-pump ↔ rAF integration: frame pacing, spin-loop detection
       (PeekMessage-spin games burn 100% CPU — detect and yield)
 - [ ] `inweb`: mouse/keyboard events → messages + dinput8 state; pointer lock
@@ -275,6 +277,12 @@ HLE, no Wine/no system emulator. **F1 done.**
 
 **Exit criterion:** `window.exe` opens a window, paints on WM_PAINT, responds
 to input — full round trip guest→host→guest.
+**2026-07-10: reverse-thunk round trip MET (headless).** `window.exe` (real
+PE, 7 user32 imports) drives the pump; DispatchMessageA re-enters the guest
+WndProc, which accumulates seeded WM_USER wParams to exit 30 — only reachable
+via host→guest→host. Under ASan/UBSan. Codex reviewing ABI edge cases
+(stdcall cleanup, nested SendMessage, ExitProcess-from-wndproc, fault EIP)
+before this is marked fully done. Canvas window + WM_PAINT + live input = F3.
 
 ### Phase F3 — Pixels (target: 6–10 weeks, parallel with F2 after F1)
 
