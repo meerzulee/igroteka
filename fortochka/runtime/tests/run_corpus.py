@@ -41,6 +41,7 @@ CASES = [
     ("gpa.exe", "zhrun", [], 42, None),  # GetProcAddress resolves an import, rejects a bogus name
     ("d3dinit.exe", "zhrun", [], 42, None),  # D3D9 enum/caps/CreateDevice/Reset init path (FFP persona)
     ("winmgr.exe", "zhrun", [], 42, None),  # window mgmt: metrics, Get/SetWindowLong, GWL_WNDPROC subclass
+    ("vfs.exe", "zhrun", [], 42, None),  # kernel32 file I/O: create/write/seek/read/size against the VFS
 ]
 
 

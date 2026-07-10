@@ -25,8 +25,76 @@ struct K32 {
     // MODULE_TAG + table index, so GetProcAddress can scope a lookup to the
     // module the guest actually asked about.
     std::vector<std::string> modules;
+    // In-memory VFS: files a game reads/writes. In the browser this is backed
+    // by OPFS; the native harness keeps it in host memory and a guest can
+    // populate it itself (write then read back). Paths normalized lowercase.
+    struct VFile {
+        std::string name;
+        std::vector<uint8_t> data;
+    };
+    std::vector<VFile> vfs;
+    // Open file handles: handle = FILE_TAG + index; index into open_files.
+    // vfs_index < 0 marks a closed slot (never index-reused in tier 0).
+    struct OpenFile {
+        int vfs_index = -1;
+        uint64_t pos = 0;
+    };
+    std::vector<OpenFile> open_files;
 };
 K32 g_k;
+
+// Handle tag for open files, distinct from the module tag and every pseudo-
+// handle the runtime hands out. Index stays small, so no range overlap.
+constexpr uint32_t FILE_TAG = 0x50000000u;
+constexpr uint32_t INVALID_HANDLE = 0xFFFFFFFFu;
+// Cap a single file's size and a single read/write span so a guest can't force
+// an unbounded host allocation or copy.
+constexpr uint32_t MAX_FILE_BYTES = 64u << 20;
+
+// Normalize a VFS path: lowercase, backslashes → forward slashes.
+std::string norm_path(std::string s) {
+    for (auto& c : s) {
+        c = (char)std::tolower((unsigned char)c);
+        if (c == '\\') c = '/';
+    }
+    return s;
+}
+int vfs_find(const std::string& name) {
+    std::string n = norm_path(name);
+    for (size_t i = 0; i < g_k.vfs.size(); i++)
+        if (g_k.vfs[i].name == n) return (int)i;
+    return -1;
+}
+int vfs_create(const std::string& name) {
+    g_k.vfs.push_back({norm_path(name), {}});
+    return (int)g_k.vfs.size() - 1;
+}
+// Open a VFS file index as a new handle. Returns the guest HANDLE.
+uint32_t open_file_handle(int vfs_index) {
+    g_k.open_files.push_back({vfs_index, 0});
+    return FILE_TAG + (uint32_t)(g_k.open_files.size() - 1);
+}
+// If `h` is a live file handle, return its OpenFile*, else nullptr.
+K32::OpenFile* as_open_file(uint32_t h) {
+    if (h < FILE_TAG || (h - FILE_TAG) >= g_k.open_files.size()) return nullptr;
+    K32::OpenFile* of = &g_k.open_files[h - FILE_TAG];
+    return of->vfs_index >= 0 ? of : nullptr;
+}
+// Copy `n` bytes from host `src` into guest memory at `dst`, bounds-checked per
+// byte against the arena (like write32) so a bogus dst is a no-op, not a host
+// out-of-bounds write. Returns bytes actually written in-range.
+uint32_t guest_write_bytes(Machine& m, uint32_t dst, const uint8_t* src, uint32_t n) {
+    uint8_t* base = m.mem();
+    uint32_t sz = m.mem_size();
+    uint32_t wrote = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        uint64_t d = (uint64_t)dst + i;
+        if (d >= sz) break;
+        base[d] = src[i];
+        wrote++;
+    }
+    return wrote;
+}
 
 // Synthetic module-handle base. Distinct from the image base (0x400000) and the
 // opaque wide-name fake (0x10000000); index stays small so no bit overlap.
@@ -183,11 +251,105 @@ void install(Machine& m) {
                 m.ret(5, 0); // buffer outside guest memory: fail the call
                 return true;
             }
+            if (K32::OpenFile* of = as_open_file(h)) {
+                // Write into the VFS file at the current position (extending it),
+                // capping total size so a guest can't force an unbounded alloc.
+                auto& data = g_k.vfs[of->vfs_index].data;
+                uint64_t end = of->pos + len;
+                if (end > MAX_FILE_BYTES) { m.ret(5, 0); return true; }
+                if (data.size() < end) data.resize((size_t)end, 0);
+                for (uint32_t i = 0; i < len; i++)
+                    data[(size_t)of->pos + i] = m.mem()[buf + i];
+                of->pos = end;
+                if (p_written) m.write32(p_written, len);
+                m.ret(5, 1);
+                return true;
+            }
             FILE* out = h == H_STDERR ? stderr : stdout;
             std::fwrite(m.mem() + buf, 1, len, out); // exact bytes, NULs included
             std::fflush(out);
             if (p_written) m.write32(p_written, len);
             m.ret(5, 1);
+            return true;
+        }
+        if (name == "CreateFileA") {
+            // CreateFileA(name, access, share, sec, disposition, flags, template).
+            // disposition: CREATE_NEW=1, CREATE_ALWAYS=2, OPEN_EXISTING=3,
+            // OPEN_ALWAYS=4, TRUNCATE_EXISTING=5. Returns a handle or
+            // INVALID_HANDLE_VALUE. lpFileName is arg0.
+            std::string path = m.read_cstr(m.arg(0));
+            uint32_t disp = m.arg(4);
+            int idx = vfs_find(path);
+            bool exists = idx >= 0;
+            uint32_t handle = INVALID_HANDLE;
+            switch (disp) {
+                case 1: /*CREATE_NEW*/       if (exists) break; idx = vfs_create(path); handle = open_file_handle(idx); break;
+                case 2: /*CREATE_ALWAYS*/    if (!exists) idx = vfs_create(path); g_k.vfs[idx].data.clear(); handle = open_file_handle(idx); break;
+                case 3: /*OPEN_EXISTING*/    if (exists) handle = open_file_handle(idx); break;
+                case 4: /*OPEN_ALWAYS*/      if (!exists) idx = vfs_create(path); handle = open_file_handle(idx); break;
+                case 5: /*TRUNCATE_EXISTING*/if (exists) { g_k.vfs[idx].data.clear(); handle = open_file_handle(idx); } break;
+                default:                     if (exists) handle = open_file_handle(idx); break;
+            }
+            if (handle == INVALID_HANDLE) g_k.last_error = 2; // ERROR_FILE_NOT_FOUND
+            m.ret(7, handle);
+            return true;
+        }
+        if (name == "ReadFile") {
+            // ReadFile(hFile, lpBuffer, nBytes, lpBytesRead, lpOverlapped).
+            uint32_t h = m.arg(0), buf = m.arg(1), len = m.arg(2), p_read = m.arg(3);
+            K32::OpenFile* of = as_open_file(h);
+            if (!of) { // console/unknown handle: 0 bytes read, still success
+                if (p_read) m.write32(p_read, 0);
+                m.ret(5, 1);
+                return true;
+            }
+            const auto& data = g_k.vfs[of->vfs_index].data;
+            uint32_t avail = of->pos >= data.size() ? 0 : (uint32_t)(data.size() - of->pos);
+            uint32_t want = len < avail ? len : avail;
+            uint32_t got = guest_write_bytes(m, buf, data.data() + of->pos, want);
+            of->pos += got;
+            if (p_read) m.write32(p_read, got);
+            m.ret(5, 1);
+            return true;
+        }
+        if (name == "SetFilePointer") {
+            // SetFilePointer(hFile, lDistanceToMove, lpDistanceToMoveHigh,
+            // dwMoveMethod). FILE_BEGIN=0, FILE_CURRENT=1, FILE_END=2.
+            uint32_t h = m.arg(0);
+            int32_t dist = (int32_t)m.arg(1);
+            uint32_t method = m.arg(3);
+            K32::OpenFile* of = as_open_file(h);
+            if (!of) { m.ret(4, INVALID_HANDLE); return true; }
+            int64_t base = method == 1 ? (int64_t)of->pos
+                         : method == 2 ? (int64_t)g_k.vfs[of->vfs_index].data.size()
+                                       : 0; // FILE_BEGIN
+            int64_t np = base + dist;
+            if (np < 0) { g_k.last_error = 131; m.ret(4, INVALID_HANDLE); return true; }
+            of->pos = (uint64_t)np;
+            m.ret(4, (uint32_t)of->pos);
+            return true;
+        }
+        if (name == "GetFileSize") {
+            // GetFileSize(hFile, lpFileSizeHigh) → low 32 bits (high via ptr).
+            uint32_t h = m.arg(0), p_high = m.arg(1);
+            K32::OpenFile* of = as_open_file(h);
+            if (!of) { m.ret(2, INVALID_HANDLE); return true; }
+            uint64_t sz = g_k.vfs[of->vfs_index].data.size();
+            if (p_high) m.write32(p_high, (uint32_t)(sz >> 32));
+            m.ret(2, (uint32_t)sz);
+            return true;
+        }
+        if (name == "GetFileAttributesA") {
+            // 0x80 FILE_ATTRIBUTE_NORMAL if present, else INVALID_FILE_ATTRIBUTES.
+            std::string path = m.read_cstr(m.arg(0));
+            m.ret(1, vfs_find(path) >= 0 ? 0x80 : INVALID_HANDLE);
+            return true;
+        }
+        if (name == "CloseHandle") {
+            // Free a file handle if that's what this is; other handle kinds
+            // (heap, pseudo-handles) just succeed.
+            if (K32::OpenFile* of = as_open_file(m.arg(0))) of->vfs_index = -1;
+            m.ret(1, 1);
             return true;
         }
         if (name == "RaiseException") {
