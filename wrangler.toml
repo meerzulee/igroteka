@@ -1,4 +1,5 @@
 name = "igroteka"
+main = "cafe/src/index.ts"
 compatibility_date = "2026-07-01"
 
 # Custom domain: igroteka.mrz.sh (zone mrz.sh on this Cloudflare account)
@@ -6,5 +7,22 @@ routes = [
   { pattern = "igroteka.mrz.sh", custom_domain = true }
 ]
 
+# Static site is served first; anything without a matching asset (i.e. /api/*)
+# falls through to the cafe worker.
 [assets]
 directory = "./site"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "igroteka-cafe"
+database_id = "0e2946e4-d70a-4a53-b99a-fac120b55529"
+migrations_dir = "cafe/migrations"
+
+# OAuth client IDs (public). Secrets live in worker secrets / .dev.vars:
+#   GOOGLE_CLIENT_SECRET, GITHUB_CLIENT_SECRET, DISCORD_CLIENT_SECRET,
+#   DROPBOX_CLIENT_SECRET, TOKEN_KEY  (see cafe/PROVIDERS.md)
+[vars]
+GOOGLE_CLIENT_ID = ""
+GITHUB_CLIENT_ID = ""
+DISCORD_CLIENT_ID = ""
+DROPBOX_CLIENT_ID = ""

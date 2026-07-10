@@ -110,6 +110,35 @@ skirmish in under 10 minutes, no docs.
 
 ---
 
+## Café accounts (started 2026-07-10)
+
+Identity layer ahead of the lobby (lobby is the next step and consumes these
+users/sessions). Lives in `cafe/` (MIT), deployed as the igroteka worker
+(`wrangler.toml` `main`), same-origin API under `/api/*`; D1 for storage.
+
+- [x] Guest-first accounts: anonymous profile → OAuth link promotes in place
+      (same user id survives the claim); orphan guests GC'd on logout/switch
+- [x] OAuth sign-in: Google / GitHub / Discord (arctic), sessions = random
+      token cookie + sha256 row in D1, sliding 30-day renewal, rotation on login
+- [x] Cloud-save connections: Google Drive (`drive.appdata`, hidden app folder)
+      + Dropbox (app folder). Worker stores AES-GCM-encrypted refresh tokens and
+      mints short-lived access tokens; **file bytes go browser→cloud directly,
+      never through Igroteka** (deviation note: for *saves* the refresh token
+      does live server-side encrypted — the asset-wizard "tokens never touch
+      our server" red line still holds for game assets)
+- [x] XP-native UI: start-menu header = live identity; User Accounts window
+      (sign-in, linking, rename, cloud connect/disconnect, log off)
+- [ ] Provider consoles: create Google/GitHub/Discord/Dropbox apps, set
+      secrets (`cafe/PROVIDERS.md` has the exact checklist) — **user-side**
+- [ ] Save-sync layer: engine saves/replays → OPFS → user's cloud via
+      `cafe.js` `cloudToken()` (Phase 2 tie-in)
+- [ ] Rate limiting before lobby launch (guest INSERT is unauthenticated)
+
+**Exit criterion:** sign in with a provider on two devices and see the same
+profile; connect Drive/Dropbox and mint a working access token from the browser.
+
+---
+
 ## Phase 3 — The café: multiplayer (target: 1–2 months)
 
 - [ ] Transport: replace dead GameSpy/UDP layer with WebRTC DataChannels

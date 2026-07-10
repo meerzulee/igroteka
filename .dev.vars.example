@@ -1,0 +1,12 @@
+# Copy to .dev.vars (gitignored) for local `npm run dev` in cafe/.
+# Client IDs are set here too in dev (overrides the empty [vars] defaults).
+GOOGLE_CLIENT_ID = ""
+GOOGLE_CLIENT_SECRET = ""
+GITHUB_CLIENT_ID = ""
+GITHUB_CLIENT_SECRET = ""
+DISCORD_CLIENT_ID = ""
+DISCORD_CLIENT_SECRET = ""
+DROPBOX_CLIENT_ID = ""
+DROPBOX_CLIENT_SECRET = ""
+# base64 of 32 random bytes: `openssl rand -base64 32`
+TOKEN_KEY = ""

@@ -1,0 +1,23 @@
+{
+  "name": "@igroteka/cafe",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Igroteka cafe: accounts, cloud saves, lobby (Cloudflare Worker)",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --config ../wrangler.toml",
+    "deploy": "wrangler deploy --config ../wrangler.toml",
+    "migrate:local": "wrangler d1 migrations apply igroteka-cafe --local --config ../wrangler.toml",
+    "migrate:remote": "wrangler d1 migrations apply igroteka-cafe --remote --config ../wrangler.toml",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "arctic": "^3.7.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260710.1",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.110.0"
+  }
+}

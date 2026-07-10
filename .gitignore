@@ -45,3 +45,9 @@ fortochka/**/bench/*.bin
 
 # Fortochka: web build artifacts
 build-web/
+
+# Cafe: local secrets for wrangler dev
+.dev.vars
+
+# Wrangler local state (D1 cache, dev server tmp) — root and cafe/
+.wrangler/

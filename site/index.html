@@ -79,6 +79,20 @@
     }
     #smHeader .uname { color: #fff; font-size: 14px; font-weight: bold;
       text-shadow: 1px 1px 1px rgba(0,0,0,.4); }
+    #smHeader { cursor: pointer; }
+    #smHeader:hover .uname { text-decoration: underline; }
+    #smHeader .avatar img { border-radius: 4px; object-fit: cover; }
+    /* account window */
+    .acctBtn { display: block; width: 100%; margin: 4px 0; text-align: left; padding: 6px 10px; }
+    .acctBtn:disabled { color: #888; }
+    .acctRow { display: flex; align-items: center; gap: 8px; padding: 5px 0;
+      border-bottom: 1px solid #e4e0d0; font-size: 12px; }
+    .acctRow:last-child { border-bottom: 0; }
+    .acctRow .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .acctBadge { font-size: 10px; background: #d8e4f8; border: 1px solid #7a99d6;
+      border-radius: 3px; padding: 1px 5px; color: #0a246a; }
+    .acctErr { background: #fff; border: 1px solid #d83a2e; padding: 8px 10px;
+      font-size: 11px; margin-bottom: 10px; display: flex; gap: 8px; align-items: flex-start; }
     #smCols { display: flex; }
     #smLeft { flex: 1.15; background: #fff; padding: 6px 0; min-height: 240px;
       display: flex; flex-direction: column; }
@@ -205,6 +219,7 @@
 import { classify, opfsWrite, opfsInventory, missingFiles, requestPersistence,
          zipEntries, gameIconURL, opfsReadFile, opfsWritable, dedupeImports,
          setGameFavicon, SITE_VERSION, ENGINE_BUILD } from './igroteka.js?v=22';
+import * as cafe from './cafe.js?v=1';
 setGameFavicon();
 
 // Fullscreen toggle in the taskbar tray. documentElement keeps every XP
@@ -522,6 +537,152 @@ async function openUninstall() {
   };
 }
 
+// ---------- accounts ----------
+// Identity lives in the cafe worker (/api). The start-menu header mirrors it;
+// the User Accounts window manages sign-in, linking and cloud saves.
+let ME = { user: null, accounts: [], clouds: [] };
+
+async function refreshIdentity() {
+  try { ME = await cafe.fetchMe(); } catch { ME = { user: null, accounts: [], clouds: [] }; }
+  const header = document.querySelector('#smHeader');
+  header.querySelector('.uname').textContent = ME.user ? ME.user.display_name : 'Гость';
+  const img = header.querySelector('.avatar img');
+  img.src = (ME.user && ME.user.avatar_url) || 'icons/user.png';
+  return ME;
+}
+
+const ACCT_ERRORS = {
+  linked_to_other_account: 'That sign-in is already linked to a different Igroteka account. Log off first to use it.',
+  no_refresh_token: 'The cloud provider did not grant offline access. Try connecting again.',
+  access_denied: 'Sign-in was cancelled.',
+  auth_required: 'Sign in first, then connect cloud storage.',
+  state_mismatch: 'Sign-in did not complete (stale request). Try again.',
+  exchange_failed: 'Sign-in did not complete. Try again.',
+};
+
+async function openAccount(errReason) {
+  const body = makeWindow('account', 'User Accounts', 430);
+  if (!body) return;
+  const render = async () => {
+    let config = { providers: {}, clouds: {} };
+    try { config = await cafe.fetchConfig(); } catch { /* API down: buttons disable */ }
+    await refreshIdentity();
+    const err = errReason
+      ? `<div class="acctErr"><span>⚠️</span><span>${ACCT_ERRORS[errReason] || 'Something went wrong. Try again.'}</span></div>`
+      : '';
+    errReason = null;
+
+    if (!ME.user) {
+      const prov = (p, label) => `<button class="acctBtn" data-auth="${p}" ${config.providers[p] ? '' : 'disabled title="Not configured yet"'}>${label}</button>`;
+      body.innerHTML = `<div style="padding:14px;font-size:12px">
+        ${err}
+        <h3 style="margin-top:0">Sign in to Igroteka</h3>
+        <p>Keep your name and cloud saves across devices.</p>
+        ${prov('google', '🔵 Sign in with Google')}
+        ${prov('github', '⚫ Sign in with GitHub')}
+        ${prov('discord', '🟣 Sign in with Discord')}
+        <div style="text-align:center;color:#777;margin:6px 0">— or —</div>
+        <button class="acctBtn" id="acctGuest">👤 Continue as Guest</button>
+        <p style="font-size:11px;color:#555">A guest profile lives in this browser only,
+        until you link a sign-in to keep it.</p>
+      </div>`;
+      body.querySelectorAll('[data-auth]').forEach((b) => {
+        b.onclick = () => { location.href = cafe.authStartURL(b.dataset.auth); };
+      });
+      body.querySelector('#acctGuest').onclick = async () => {
+        await cafe.guestLogin();
+        render();
+      };
+      return;
+    }
+
+    const u = ME.user;
+    const linked = new Set(ME.accounts);
+    const clouds = new Map(ME.clouds.map((c) => [c.provider, c]));
+    const provRow = (p, label) => {
+      if (linked.has(p)) return `<div class="acctRow"><span class="grow">${label}</span><span class="acctBadge">linked</span></div>`;
+      const dis = config.providers[p] ? '' : 'disabled title="Not configured yet"';
+      return `<div class="acctRow"><span class="grow">${label}</span><button data-auth="${p}" ${dis}>Link…</button></div>`;
+    };
+    const cloudRow = (p, label) => {
+      const c = clouds.get(p);
+      if (c) return `<div class="acctRow"><span class="grow">${label} — <b>${escapeHtml(c.label || 'connected')}</b></span><button data-cloud-off="${p}">Disconnect</button></div>`;
+      const dis = config.clouds[p] ? '' : 'disabled title="Not configured yet"';
+      return `<div class="acctRow"><span class="grow">${label}</span><button data-cloud-on="${p}" ${dis}>Connect…</button></div>`;
+    };
+    body.innerHTML = `<div style="padding:14px;font-size:12px">
+      ${err}
+      <div style="display:flex;gap:12px;align-items:center;margin-bottom:10px">
+        <img src="${escapeHtml(u.avatar_url || 'icons/user.png')}" style="width:48px;height:48px;border-radius:6px;object-fit:cover;border:1px solid #999">
+        <div style="flex:1">
+          <div id="acctNameRow" style="font-size:14px;font-weight:bold">${escapeHtml(u.display_name)}
+            ${u.is_guest ? '<span class="acctBadge">guest</span>' : ''}</div>
+          <div style="margin-top:4px">
+            <button id="acctRename">Rename…</button>
+            <span id="acctRenameBox" style="display:none">
+              <input id="acctNameInput" maxlength="24" style="width:130px">
+              <button id="acctNameSave">OK</button>
+            </span>
+          </div>
+        </div>
+      </div>
+      ${u.is_guest ? `<p style="font-size:11px;color:#555;margin:0 0 8px">This guest profile lives in this
+        browser only. Link a sign-in below to keep it everywhere.</p>` : ''}
+      <fieldset><legend>Sign-ins</legend>
+        ${provRow('google', '🔵 Google')}
+        ${provRow('github', '⚫ GitHub')}
+        ${provRow('discord', '🟣 Discord')}
+      </fieldset>
+      <fieldset style="margin-top:8px"><legend>Cloud saves</legend>
+        ${cloudRow('gdrive', '📁 Google Drive')}
+        ${cloudRow('dropbox', '📦 Dropbox')}
+        <p style="font-size:11px;color:#555;margin:6px 0 0">Saves and replays go to your own
+        cloud storage. Igroteka servers never see them.</p>
+      </fieldset>
+      <div style="text-align:right;margin-top:10px"><button id="acctLogout">Log Off</button></div>
+    </div>`;
+    body.querySelectorAll('[data-auth]').forEach((b) => {
+      b.onclick = () => { location.href = cafe.authStartURL(b.dataset.auth); };
+    });
+    body.querySelectorAll('[data-cloud-on]').forEach((b) => {
+      b.onclick = () => { location.href = cafe.connectStartURL(b.dataset.cloudOn); };
+    });
+    body.querySelectorAll('[data-cloud-off]').forEach((b) => {
+      b.onclick = async () => { b.disabled = true; await cafe.disconnectCloud(b.dataset.cloudOff); render(); };
+    });
+    body.querySelector('#acctRename').onclick = () => {
+      body.querySelector('#acctRename').style.display = 'none';
+      const box = body.querySelector('#acctRenameBox');
+      const input = body.querySelector('#acctNameInput');
+      box.style.display = '';
+      input.value = u.display_name;
+      input.focus();
+      const save = async () => {
+        const name = input.value.trim();
+        if (name && name !== u.display_name) await cafe.rename(name);
+        render();
+      };
+      body.querySelector('#acctNameSave').onclick = save;
+      input.onkeydown = (e) => { if (e.key === 'Enter') save(); };
+    };
+    body.querySelector('#acctLogout').onclick = async () => {
+      await cafe.logout();
+      render();
+    };
+  };
+  render();
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+document.getElementById('smHeader').addEventListener('click', () => {
+  startMenu.style.display = 'none';
+  openAccount();
+});
+refreshIdentity();
+
 // ---------- desktop layout ----------
 const setupIcon = addIcon('setup', '<img src="icons/cd.png" alt="">', 'Install C&C Generals Zero Hour', 24, 24, openSetup);
 setupIcon.id = 'setupIcon';
@@ -601,6 +762,12 @@ function showFilesMissingError() {
 
 {
   const q = new URLSearchParams(location.search);
+  // Landing back from an OAuth round trip: reopen User Accounts.
+  const acct = q.get('acct');
+  if (acct) {
+    history.replaceState(null, '', location.pathname);
+    openAccount(acct === 'err' ? (q.get('reason') || 'exchange_failed') : null);
+  }
   if (q.get('err') === 'zh-files-missing') {
     history.replaceState(null, '', location.pathname);  // no re-alert on reload
     localStorage.removeItem('zh-installed');  // install claim is stale — files gone
