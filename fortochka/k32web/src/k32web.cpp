@@ -54,6 +54,18 @@ struct K32 {
         size_t pos = 0;
     };
     std::vector<FindState> finds; // handle = FIND_TAG + index
+    // Registry shim (advapi32). Values are exact-match (key path + value name,
+    // both normalized lowercase); everything else is "not found", which pushes
+    // an era game onto its relative-path fallback. Misses are logged so a boot
+    // log says exactly which keys to seed.
+    struct RegValue {
+        std::string key, name;   // normalized
+        uint32_t type = 1;       // REG_SZ=1, REG_DWORD=4
+        std::vector<uint8_t> data;
+    };
+    std::vector<RegValue> reg;
+    std::vector<std::string> reg_open;    // open-key handles: KEY_TAG + index
+    std::vector<std::string> reg_created; // keys made by RegCreateKeyExA
 };
 K32 g_k;
 
@@ -75,6 +87,12 @@ constexpr uint32_t MAX_CONV_CHARS = 64u << 20;
 // Directory-search handle tag, distinct from FILE_TAG and MODULE_TAG.
 constexpr uint32_t FIND_TAG = 0x60000000u;
 constexpr size_t MAX_FINDS = 4096;
+// Registry open-key handle tag + growth caps (values/handles never reclaimed
+// in tier 0, so bound them). Note KEY_TAG stays below the predefined roots
+// (0x80000000+) — a root HKEY must never index reg_open.
+constexpr uint32_t KEY_TAG = 0x70000000u;
+constexpr size_t MAX_REG_VALUES = 4096, MAX_REG_OPEN = 4096, MAX_REG_KEYS = 4096;
+constexpr uint32_t MAX_REG_DATA = 64u << 10; // one value's data cap
 
 // Normalize a VFS path: lowercase, backslashes → forward slashes.
 std::string norm_path(std::string s) {
@@ -205,6 +223,56 @@ uint32_t open_vfs(const std::string& path_raw, uint32_t disp) {
     if (handle == INVALID_HANDLE) g_k.last_error = 2; // ERROR_FILE_NOT_FOUND
     return handle;
 }
+// ---- registry helpers ----
+// Map an HKEY (predefined root or an open-key handle) to its normalized path.
+// Empty string = unknown/invalid handle.
+std::string reg_key_path(uint32_t h) {
+    switch (h) {
+        case 0x80000000u: return "hkcr";
+        case 0x80000001u: return "hkcu";
+        case 0x80000002u: return "hklm";
+        case 0x80000003u: return "hku";
+        case 0x80000005u: return "hkcc";
+        default: break;
+    }
+    if (h >= KEY_TAG && h < 0x80000000u && (h - KEY_TAG) < g_k.reg_open.size())
+        return g_k.reg_open[h - KEY_TAG];
+    return std::string();
+}
+// Join an HKEY base with a subkey path (normalized, empty subkey = the base).
+std::string reg_join(uint32_t h, const std::string& sub_raw) {
+    std::string base = reg_key_path(h);
+    if (base.empty()) return base;
+    std::string sub = strip_slash(norm_path(sub_raw));
+    return sub.empty() ? base : base + "/" + sub;
+}
+// A key "exists" if any stored value or created key sits at it or under it
+// (intermediate keys exist implicitly, as on Windows).
+bool reg_key_exists(const std::string& path) {
+    if (path.empty()) return false;
+    auto covers = [&](const std::string& k) {
+        return k == path ||
+               (k.size() > path.size() && k.compare(0, path.size(), path) == 0 &&
+                k[path.size()] == '/');
+    };
+    for (const auto& v : g_k.reg) if (covers(v.key)) return true;
+    for (const auto& k : g_k.reg_created) if (covers(k)) return true;
+    // The predefined roots themselves always exist.
+    return path == "hkcr" || path == "hkcu" || path == "hklm" ||
+           path == "hku" || path == "hkcc";
+}
+// Open-key handle for a path, or 0 at the cap (caller maps to an error).
+uint32_t reg_open_handle(const std::string& path) {
+    if (g_k.reg_open.size() >= MAX_REG_OPEN) return 0;
+    g_k.reg_open.push_back(path);
+    return KEY_TAG + (uint32_t)(g_k.reg_open.size() - 1);
+}
+K32::RegValue* reg_find(const std::string& key, const std::string& name) {
+    for (auto& v : g_k.reg)
+        if (v.key == key && v.name == name) return &v;
+    return nullptr;
+}
+
 // File attributes for a resolved path: NORMAL(0x80) if a file exists, DIRECTORY
 // (0x10) if any VFS entry lives under it, else INVALID_FILE_ATTRIBUTES.
 uint32_t vfs_attrs(const std::string& path_raw) {
@@ -1112,6 +1180,109 @@ void install(Machine& m) {
         }
         if (name == "lstrlenA") {
             m.ret(1, (uint32_t)m.read_cstr(m.arg(0)).size());
+            return true;
+        }
+        return false;
+    });
+
+    // ---- advapi32: the registry shim ----
+    // Exact-match store; everything else "not found" (LSTATUS in EAX, not
+    // GetLastError), which pushes an era game onto its relative-path fallback.
+    // Misses are logged to stderr so a boot log names the keys worth seeding.
+    m.add_handler([](Machine& m, const std::string& dll,
+                     const std::string& name) -> bool {
+        if (dll != "advapi32.dll") return false;
+        constexpr uint32_t ERROR_SUCCESS = 0, ERROR_FILE_NOT_FOUND = 2,
+                           ERROR_MORE_DATA = 234, ERROR_INVALID_HANDLE_ = 6,
+                           ERROR_NO_SYSTEM_RESOURCES = 1450;
+
+        if (name == "RegOpenKeyA" || name == "RegOpenKeyExA") {
+            // RegOpenKeyA(hKey, lpSubKey, phkResult) = 3
+            // RegOpenKeyExA(hKey, lpSubKey, ulOptions, samDesired, phkResult) = 5
+            bool ex = name == "RegOpenKeyExA";
+            uint32_t nargs = ex ? 5 : 3;
+            uint32_t phk = m.arg(ex ? 4 : 2);
+            std::string path = reg_join(m.arg(0), m.read_cstr(m.arg(1)));
+            if (path.empty()) { m.ret(nargs, ERROR_INVALID_HANDLE_); return true; }
+            if (!reg_key_exists(path)) {
+                std::fprintf(stderr, "regweb: open miss %s\n", path.c_str());
+                m.ret(nargs, ERROR_FILE_NOT_FOUND);
+                return true;
+            }
+            uint32_t h = reg_open_handle(path);
+            if (!h) { m.ret(nargs, ERROR_NO_SYSTEM_RESOURCES); return true; }
+            m.write32(phk, h);
+            m.ret(nargs, ERROR_SUCCESS);
+            return true;
+        }
+        if (name == "RegCreateKeyExA") {
+            // (hKey, lpSubKey, Reserved, lpClass, dwOptions, samDesired,
+            //  lpSecurityAttributes, phkResult, lpdwDisposition) = 9
+            std::string path = reg_join(m.arg(0), m.read_cstr(m.arg(1)));
+            if (path.empty()) { m.ret(9, ERROR_INVALID_HANDLE_); return true; }
+            bool existed = reg_key_exists(path);
+            if (!existed) {
+                if (g_k.reg_created.size() >= MAX_REG_KEYS) {
+                    m.ret(9, ERROR_NO_SYSTEM_RESOURCES);
+                    return true;
+                }
+                g_k.reg_created.push_back(path);
+            }
+            uint32_t h = reg_open_handle(path);
+            if (!h) { m.ret(9, ERROR_NO_SYSTEM_RESOURCES); return true; }
+            m.write32(m.arg(7), h);
+            uint32_t pdisp = m.arg(8); // 1 = created new, 2 = opened existing
+            if (pdisp) m.write32(pdisp, existed ? 2 : 1);
+            m.ret(9, ERROR_SUCCESS);
+            return true;
+        }
+        if (name == "RegQueryValueExA") {
+            // (hKey, lpValueName, lpReserved, lpType, lpData, lpcbData) = 6
+            std::string key = reg_key_path(m.arg(0));
+            std::string vname = norm_path(m.read_cstr(m.arg(1)));
+            uint32_t pType = m.arg(3), pData = m.arg(4), pcb = m.arg(5);
+            K32::RegValue* v = key.empty() ? nullptr : reg_find(key, vname);
+            if (!v) {
+                std::fprintf(stderr, "regweb: query miss %s [%s]\n", key.c_str(),
+                             vname.c_str());
+                m.ret(6, ERROR_FILE_NOT_FOUND);
+                return true;
+            }
+            if (pType) m.write32(pType, v->type);
+            uint32_t need = (uint32_t)v->data.size();
+            uint32_t have = pcb ? m.read32(pcb) : 0;
+            if (pcb) m.write32(pcb, need);
+            if (!pData) { m.ret(6, ERROR_SUCCESS); return true; } // size probe
+            if (have < need) { m.ret(6, ERROR_MORE_DATA); return true; }
+            guest_write_bytes(m, pData, v->data.data(), need);
+            m.ret(6, ERROR_SUCCESS);
+            return true;
+        }
+        if (name == "RegSetValueExA") {
+            // (hKey, lpValueName, Reserved, dwType, lpData, cbData) = 6
+            std::string key = reg_key_path(m.arg(0));
+            if (key.empty()) { m.ret(6, ERROR_INVALID_HANDLE_); return true; }
+            uint32_t type = m.arg(3), pData = m.arg(4), cb = m.arg(5);
+            if (cb > MAX_REG_DATA) { m.ret(6, ERROR_NO_SYSTEM_RESOURCES); return true; }
+            std::string vname = norm_path(m.read_cstr(m.arg(1)));
+            K32::RegValue* v = reg_find(key, vname);
+            if (!v) {
+                if (g_k.reg.size() >= MAX_REG_VALUES) {
+                    m.ret(6, ERROR_NO_SYSTEM_RESOURCES);
+                    return true;
+                }
+                g_k.reg.push_back({key, vname, type, {}});
+                v = &g_k.reg.back();
+            }
+            v->type = type;
+            v->data.assign(cb, 0);
+            for (uint32_t i = 0; i < cb; i++) // bounds-checked guest read
+                v->data[i] = (uint8_t)(m.read32(pData + i) & 0xFF);
+            m.ret(6, ERROR_SUCCESS);
+            return true;
+        }
+        if (name == "RegCloseKey") {
+            m.ret(1, ERROR_SUCCESS); // open-key slots are immortal in tier 0
             return true;
         }
         return false;

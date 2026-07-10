@@ -44,6 +44,7 @@ CASES = [
     ("vfs.exe", "zhrun", [], 42, None),  # kernel32 file I/O: create/write/seek/read/size against the VFS
     ("crt.exe", "zhrun", [], 42, None),  # CRT pre-main: Interlocked, MB<->WC, LCMapString, GetStringType, GetCPInfo
     ("dirscan.exe", "zhrun", [], 42, None),  # path/cwd + FindFirstFile/FindNextFile glob over the VFS
+    ("reg.exe", "zhrun", [], 42, None),  # advapi32 registry shim: create/set/query + miss paths
 ]
 
 
