@@ -22,23 +22,30 @@
 
 using runtime::Machine;
 
-// Synchronous binary fetch. Sync XHR can't use responseType, so read the body as
-// a "text/plain; charset=x-user-defined" string (each char = one raw byte) and
-// copy it out. Returns 1 + malloc'd bytes on HTTP 200, 0 (len=-1) on a miss.
+// Synchronous BYTE-EXACT fetch. In a Web Worker a synchronous XHR may set
+// responseType='arraybuffer', which gives the raw bytes regardless of the file's
+// apparent encoding (the text path mis-decodes UTF-16/BOM files, halving them).
+// Returns 1 + malloc'd bytes on HTTP 200, 0 (len=-1) on a miss.
 extern "C" EM_JS(int, zhweb_host_fetch, (const char* url, unsigned char** out, int* len), {
   var path = UTF8ToString(url);
   try {
     var xhr = new XMLHttpRequest();
     xhr.open('GET', path, false); // synchronous — Web Worker only
-    xhr.overrideMimeType('text/plain; charset=x-user-defined');
+    try { xhr.responseType = 'arraybuffer'; } catch (e) {}
     xhr.send();
     if (xhr.status !== 200 && xhr.status !== 0) { setValue(len, -1, 'i32'); return 0; }
-    var s = xhr.responseText;
-    var n = s.length;
-    var p = _malloc(n || 1);
-    for (var i = 0; i < n; i++) HEAPU8[p + i] = s.charCodeAt(i) & 0xff;
+    var bytes;
+    if (xhr.response && xhr.response.byteLength !== undefined) {
+      bytes = new Uint8Array(xhr.response);          // byte-exact
+    } else {                                          // fallback (no BOM only)
+      var s = xhr.responseText, n = s.length;
+      bytes = new Uint8Array(n);
+      for (var i = 0; i < n; i++) bytes[i] = s.charCodeAt(i) & 0xff;
+    }
+    var p = _malloc(bytes.length || 1);
+    HEAPU8.set(bytes, p);
     setValue(out, p, 'i32');
-    setValue(len, n, 'i32');
+    setValue(len, bytes.length, 'i32');
     return 1;
   } catch (e) {
     setValue(len, -1, 'i32');
@@ -96,7 +103,10 @@ int zhweb_boot(const uint8_t* exe, int len, const char* url_base, int slice_m) {
     g_fb = nullptr;
     g_fb_w = g_fb_h = 0;
     g_exit = -3;
-    g_m = std::make_unique<Machine>(512u << 20); // 512MB arena for RTW
+    // RTW loads its whole menu 3D-background scene (building models, unit db,
+    // animations) onto a never-freed bump heap, so it needs a big arena. 1.5GB
+    // leaves ~1.45GB of guest heap above the image.
+    g_m = std::make_unique<Machine>(1536u << 20);
     try {
         g_m->load(exe, (size_t)len);
     } catch (const peload::LoadError& e) {
