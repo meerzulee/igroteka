@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <dirent.h>   // host-mount directory enumeration (native boot only)
@@ -26,6 +27,10 @@ struct K32 {
     uint32_t cmdline = 0;    // cached GetCommandLineA guest string
     uint32_t env_a = 0, env_w = 0; // cached GetEnvironmentStrings(A/W) blocks
     uint32_t heap_handle = 0x00E70001; // one process heap pseudo-handle
+    // HeapAlloc/HeapReAlloc size tracking so HeapSize returns the real size —
+    // a game's string class computes free space as HeapSize(buf)-used, and a
+    // wrong (0) HeapSize underflows that to "huge", skipping a needed realloc.
+    std::unordered_map<uint32_t, uint32_t> heap_size;
     // Interned DLL names for LoadLibrary/GetModuleHandle; the handle is
     // MODULE_TAG + table index, so GetProcAddress can scope a lookup to the
     // module the guest actually asked about.
@@ -893,23 +898,36 @@ void install(Machine& m) {
             uint32_t p = m.alloc(bytes ? bytes : 1);
             if (flags & 0x8)
                 for (uint32_t i = 0; i < bytes; i++) m.mem()[p + i] = 0;
+            g_k.heap_size[p] = bytes; // so HeapSize is accurate
             m.ret(3, p);
             return true;
         }
         if (name == "HeapReAlloc") {
             // HeapReAlloc(hHeap, dwFlags, lpMem, dwBytes) — bump-alloc a fresh
-            // block and copy dwBytes across (no old-size tracking; over-copy is
-            // bounds-clamped). Leaks the old block until the free path lands.
+            // block and copy the OLD block's contents across (using the tracked
+            // old size, capped by the new size). Leaks the old block (bump heap).
             uint32_t old = m.arg(2), bytes = m.arg(3);
             uint32_t p = m.alloc(bytes ? bytes : 1);
-            if (old) // copy old contents (dword steps); no old-size metadata yet
-                for (uint32_t i = 0; i + 4 <= bytes; i += 4)
+            if (old) {
+                auto it = g_k.heap_size.find(old);
+                uint32_t copy = it != g_k.heap_size.end() ? it->second : bytes;
+                if (copy > bytes) copy = bytes;
+                for (uint32_t i = 0; i + 4 <= copy; i += 4)
                     m.write32(p + i, m.read32(old + i));
+            }
+            g_k.heap_size[p] = bytes;
             m.ret(4, p);
             return true;
         }
-        if (name == "HeapFree" || name == "HeapSize" ||
-            name == "HeapValidate") {
+        if (name == "HeapSize") {
+            // (hHeap, dwFlags, lpMem) → the block's size. A string class uses this
+            // to compute free capacity; returning 0 underflows that to "huge".
+            uint32_t ptr = m.arg(2);
+            auto it = g_k.heap_size.find(ptr);
+            m.ret(3, it != g_k.heap_size.end() ? it->second : 0);
+            return true;
+        }
+        if (name == "HeapFree" || name == "HeapValidate") {
             m.ret(3, name == "HeapFree" ? 1 : 0); // no free (bump allocator)
             return true;
         }
