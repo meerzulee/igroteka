@@ -43,4 +43,16 @@ fi
 cp runtime/web/rtw.html runtime/web/worker.js runtime/web/fsworker.js \
    runtime/web/fsproto.js runtime/web/import.html build-web/
 
+# Stage the engine + workers into the igroteka site's RTW play page. index.html
+# there is the site-shell play page (hand-written, not overwritten); it reuses
+# the same worker/fs-worker/protocol + wasm as the standalone build-web page.
+SITE_RTW="../site/play/rtw"
+if [ -d "$SITE_RTW" ] || mkdir -p "$SITE_RTW"; then
+  cp build-web/zhweb.js build-web/zhweb.wasm \
+     runtime/web/worker.js runtime/web/fsworker.js runtime/web/fsproto.js \
+     runtime/web/import.html \
+     "$SITE_RTW/"
+  echo "staged engine -> site/play/rtw/"
+fi
+
 echo "built build-web/zhweb.{js,wasm}  ($(stat -f%z build-web/zhweb.wasm) bytes)"
