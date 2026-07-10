@@ -34,12 +34,14 @@ static std::vector<uint8_t> slurp(const char* path) {
 int main(int argc, char** argv) {
     const char* path = nullptr;
     const char* game_dir = nullptr;
+    const char* dump_path = nullptr;
     uint32_t arena_mb = 64;
     uint64_t max_steps = 200'000'000;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--arena") && i + 1 < argc) arena_mb = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--steps") && i + 1 < argc) max_steps = strtoull(argv[++i], nullptr, 0);
         else if (!strcmp(argv[i], "--game") && i + 1 < argc) game_dir = argv[++i];
+        else if (!strcmp(argv[i], "--dump") && i + 1 < argc) dump_path = argv[++i];
         else path = argv[i];
     }
     if (!path) {
@@ -78,5 +80,27 @@ int main(int argc, char** argv) {
     }
     fprintf(stderr, "zhrun: process exited code=%d icount=%" PRIu64 "\n", code,
             m.cpu().icount);
+    if (dump_path) {
+        uint32_t w = 0, h = 0;
+        const uint32_t* fb = d9web::framebuffer(w, h);
+        if (fb && w && h) {
+            FILE* f = fopen(dump_path, "wb");
+            if (f) {
+                fprintf(f, "P6\n%u %u\n255\n", w, h); // ARGB → binary PPM (RGB)
+                for (uint32_t i = 0; i < w * h; i++) {
+                    uint32_t px = fb[i];
+                    unsigned char rgb[3] = {(unsigned char)(px >> 16),
+                                            (unsigned char)(px >> 8),
+                                            (unsigned char)px};
+                    fwrite(rgb, 1, 3, f);
+                }
+                fclose(f);
+                fprintf(stderr, "zhrun: dumped %ux%u framebuffer to %s\n", w, h,
+                        dump_path);
+            }
+        } else {
+            fprintf(stderr, "zhrun: no framebuffer to dump (guest never Presented)\n");
+        }
+    }
     return code;
 }

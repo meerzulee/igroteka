@@ -59,7 +59,9 @@ struct State {
     float vp_x = 0, vp_y = 0, vp_w = 640, vp_h = 480;
     uint32_t tex_stage0 = 0; // SetTexture(0, ...): bound texture object, 0 = none
     uint32_t d3d9_vtbl = 0, device_vtbl = 0, vbuffer_vtbl = 0,
-             texture_vtbl = 0; // 0 until first use
+             texture_vtbl = 0, surface_vtbl = 0,
+             d3d8_texture_vtbl = 0; // 0 until first use (D3D8 texture vtable
+                                    // differs from D3D9 after GetLevelCount)
     State() {
         mat_identity(world);
         mat_identity(view);
@@ -424,7 +426,9 @@ void draw_core(Machine& m, uint32_t count, Vaddr vaddr) {
     bool ok = (has_xyz != has_rhw) &&
               !(fvf & ~(FVF_XYZ | FVF_XYZRHW | FVF_DIFFUSE | FVF_TEX1));
     if (!ok)
-        throw MachineError{"draw: unsupported FVF 0x" + std::to_string(fvf)};
+        return; // skip a draw whose FVF the tier-0 FFP path can't parse (e.g. a
+                // transient FVF 0, or normals/multi-texcoords) — keep the render
+                // loop alive rather than aborting the whole frame. Add on demand.
     if (count > kMaxPrimitives)
         throw MachineError{"draw: PrimitiveCount too large"};
     g_state.ensure_bb();
@@ -533,6 +537,19 @@ void vb_lock(Machine& m, const Method& mm) {
     m.write32(ppb, m.read32(vb + VB_BACKING) + offset);
     m.ret(mm.nargs, 0);
 }
+void vb_get_desc(Machine& m, const Method& mm) {
+    // GetDesc(this, D3DVERTEXBUFFER_DESC*): {Format, Type, Usage, Pool, Size, FVF}.
+    uint32_t vb = m.arg(0), p = m.arg(1);
+    if (p) {
+        m.write32(p + 0, 100);   // D3DFMT_VERTEXDATA
+        m.write32(p + 4, 1);     // D3DRTYPE_VERTEXBUFFER
+        m.write32(p + 8, 0);     // Usage
+        m.write32(p + 12, 1);    // D3DPOOL_MANAGED
+        m.write32(p + 16, m.read32(vb + VB_LENGTH)); // Size
+        m.write32(p + 20, 0);    // FVF
+    }
+    m.ret(mm.nargs, 0);
+}
 
 // --- IDirect3DTexture9 ---
 void dev_create_texture(Machine& m, const Method& mm) {
@@ -562,6 +579,87 @@ void tex_lock_rect(Machine& m, const Method& mm) {
 void dev_set_texture(Machine& m, const Method& mm) {
     // SetTexture(this, Stage, pTexture). Stage 0 honored; others recorded-noop.
     if (m.arg(1) == 0) g_state.tex_stage0 = m.arg(2);
+    m.ret(mm.nargs, 0);
+}
+
+// --- IDirect3DSurface8 (D3D8-only; a standalone image surface RTW creates to
+// stage texture pixels, then blits into a managed texture). Same W/H/backing
+// shape as a texture, so it reuses the TEX_* slots. ---
+void surf_get_desc(Machine& m, const Method& mm) {
+    // GetDesc(this, D3DSURFACE_DESC*): 32 bytes {Format,Type,Usage,Pool,Size,
+    //   MultiSampleType,Width,Height}. RTW reads this into a 32-byte stack buffer
+    //   — a null surface here (from a no-op CreateImageSurface) overflows it.
+    uint32_t s = m.arg(0), p = m.arg(1);
+    if (p) {
+        uint32_t w = m.read32(s + TEX_W), h = m.read32(s + TEX_H);
+        m.write32(p + 0, 21);          // D3DFMT_A8R8G8B8
+        m.write32(p + 4, 4);           // D3DRTYPE_SURFACE
+        m.write32(p + 8, 0);           // Usage
+        m.write32(p + 12, 0);          // Pool
+        m.write32(p + 16, w * h * 4);  // Size
+        m.write32(p + 20, 0);          // MultiSampleType
+        m.write32(p + 24, w);          // Width
+        m.write32(p + 28, h);          // Height
+    }
+    m.ret(mm.nargs, 0);
+}
+void surf_lock_rect(Machine& m, const Method& mm) {
+    // LockRect(this, D3DLOCKED_RECT*, RECT*, Flags): {Pitch, pBits}.
+    uint32_t s = m.arg(0), plr = m.arg(1);
+    if (plr) {
+        m.write32(plr + 0, m.read32(s + TEX_W) * 4);   // Pitch
+        m.write32(plr + 4, m.read32(s + TEX_BACKING)); // pBits
+    }
+    m.ret(mm.nargs, 0);
+}
+void dev_create_image_surface(Machine& m, const Method& mm) {
+    // CreateImageSurface(this, Width, Height, Format, ppSurface).
+    uint32_t w = m.arg(1), h = m.arg(2), pp = m.arg(4);
+    if (w == 0 || h == 0 || w > 4096 || h > 4096)
+        throw MachineError{"CreateImageSurface: unsupported dimensions"};
+    uint32_t backing = m.alloc(w * h * 4);
+    uint32_t s = m.create_com_instance(g_state.surface_vtbl, TEX_STATE_BYTES);
+    m.write32(s + TEX_REFCOUNT, 1);
+    m.write32(s + TEX_BACKING, backing);
+    m.write32(s + TEX_W, w);
+    m.write32(s + TEX_H, h);
+    if (pp) m.write32(pp, s);
+    m.ret(mm.nargs, 0);
+}
+void ret_one(Machine& m, const Method& mm) { m.ret(mm.nargs, 1); }
+void d3d8_set_vertex_shader(Machine& m, const Method& mm) {
+    // SetVertexShader(this, Handle). RTW drives fixed-function: the handle is an
+    // FVF code (small even value with position bits). draw_core validates it.
+    g_state.fvf = m.arg(1);
+    m.ret(mm.nargs, 0);
+}
+void d3d8_create_vertex_shader(Machine& m, const Method& mm) {
+    // CreateVertexShader(this, pDeclaration, pFunction, pHandle, Usage): FFP
+    // declaration only (no pFunction) — hand back a nonzero handle.
+    if (m.arg(3)) m.write32(m.arg(3), 0xF0000001);
+    m.ret(mm.nargs, 0);
+}
+void tex_get_surface_level(Machine& m, const Method& mm) {
+    // GetSurfaceLevel(this, Level, IDirect3DSurface8** ppSurface) — a surface
+    // SHARING this texture's backing, so locking+filling it writes the texels.
+    uint32_t tex = m.arg(0), pp = m.arg(2);
+    uint32_t s = m.create_com_instance(g_state.surface_vtbl, TEX_STATE_BYTES);
+    m.write32(s + TEX_REFCOUNT, 1);
+    m.write32(s + TEX_BACKING, m.read32(tex + TEX_BACKING));
+    m.write32(s + TEX_W, m.read32(tex + TEX_W));
+    m.write32(s + TEX_H, m.read32(tex + TEX_H));
+    if (pp) m.write32(pp, s);
+    m.ret(mm.nargs, 0);
+}
+void tex_get_level_desc(Machine& m, const Method& mm) {
+    // GetLevelDesc(this, Level, D3DSURFACE_DESC*) — same 32-byte desc as a surface.
+    uint32_t tex = m.arg(0), p = m.arg(2);
+    if (p) {
+        uint32_t w = m.read32(tex + TEX_W), h = m.read32(tex + TEX_H);
+        m.write32(p + 0, 21); m.write32(p + 4, 4); m.write32(p + 8, 0);
+        m.write32(p + 12, 0); m.write32(p + 16, w * h * 4); m.write32(p + 20, 0);
+        m.write32(p + 24, w); m.write32(p + 28, h);
+    }
     m.ret(mm.nargs, 0);
 }
 void dev_get_device_caps(Machine& m, const Method& mm) {
@@ -751,7 +849,7 @@ constexpr Method kVBufferVtbl[] = {
     {"SetPrivateData", 0, nullptr}, {"GetPrivateData", 0, nullptr},
     {"FreePrivateData", 0, nullptr}, {"SetPriority", 0, nullptr},
     {"GetPriority", 0, nullptr}, {"PreLoad", 0, nullptr}, {"GetType", 0, nullptr},
-    {"Lock", 5, vb_lock}, {"Unlock", 1, ret_ok}, {"GetDesc", 0, nullptr},
+    {"Lock", 5, vb_lock}, {"Unlock", 1, ret_ok}, {"GetDesc", 2, vb_get_desc},
 };
 static_assert(sizeof(kVBufferVtbl) / sizeof(Method) == 14,
               "IDirect3DVertexBuffer9 has 14 vtable entries");
@@ -772,6 +870,51 @@ constexpr Method kTextureVtbl[] = {
 };
 static_assert(sizeof(kTextureVtbl) / sizeof(Method) == 22,
               "IDirect3DTexture9 has 22 vtable entries");
+
+// IDirect3DSurface8 (11 methods). GetDesc/LockRect back onto the surface's
+// W/H/backing; the resource-management slots are S_OK no-ops.
+constexpr Method kSurfaceVtbl[] = {
+    {"QueryInterface", 3, com_query_interface}, {"AddRef", 1, com_addref},
+    {"Release", 1, com_release}, {"GetDevice", 2, ret_ok},
+    {"SetPrivateData", 4, ret_ok}, {"GetPrivateData", 4, ret_ok},
+    {"FreePrivateData", 2, ret_ok}, {"GetContainer", 3, ret_ok},
+    {"GetDesc", 2, surf_get_desc}, {"LockRect", 4, surf_lock_rect},
+    {"UnlockRect", 1, ret_ok},
+};
+static_assert(sizeof(kSurfaceVtbl) / sizeof(Method) == 11,
+              "IDirect3DSurface8 has 11 vtable entries");
+
+// IDirect3DTexture8 (19 methods). Same texel backing as D3D9's texture but the
+// D3D8 vtable has NO SetAutoGenFilterType/GetAutoGenFilterType/GenerateMipSub
+// Levels, so GetLevelDesc/GetSurfaceLevel/LockRect sit 3 slots earlier.
+constexpr Method kD3d8TexVtbl[] = {
+    {"QueryInterface", 3, com_query_interface}, {"AddRef", 1, com_addref},
+    {"Release", 1, com_release}, {"GetDevice", 2, ret_ok},
+    {"SetPrivateData", 5, ret_ok}, {"GetPrivateData", 4, ret_ok},
+    {"FreePrivateData", 2, ret_ok}, {"SetPriority", 2, ret_ok},
+    {"GetPriority", 1, ret_ok}, {"PreLoad", 1, ret_ok}, {"GetType", 1, ret_ok},
+    {"SetLOD", 2, ret_ok}, {"GetLOD", 1, ret_ok}, {"GetLevelCount", 1, ret_one},
+    {"GetLevelDesc", 3, tex_get_level_desc}, {"GetSurfaceLevel", 3, tex_get_surface_level},
+    {"LockRect", 5, tex_lock_rect}, {"UnlockRect", 2, ret_ok},
+    {"AddDirtyRect", 2, ret_ok},
+};
+static_assert(sizeof(kD3d8TexVtbl) / sizeof(Method) == 19,
+              "IDirect3DTexture8 has 19 vtable entries");
+void d3d8_create_texture(Machine& m, const Method& mm) {
+    // CreateTexture(this, Width, Height, Levels, Usage, Format, Pool, ppTexture)
+    // — same arg positions as D3D9, but a D3D8-layout texture object.
+    uint32_t w = m.arg(1), h = m.arg(2), ppTex = m.arg(7);
+    if (w == 0 || h == 0 || w > 4096 || h > 4096)
+        throw MachineError{"D3D8 CreateTexture: unsupported dimensions"};
+    uint32_t backing = m.alloc(w * h * 4);
+    uint32_t tex = m.create_com_instance(g_state.d3d8_texture_vtbl, TEX_STATE_BYTES);
+    m.write32(tex + TEX_REFCOUNT, 1);
+    m.write32(tex + TEX_BACKING, backing);
+    m.write32(tex + TEX_W, w);
+    m.write32(tex + TEX_H, h);
+    m.write32(ppTex, tex);
+    m.ret(mm.nargs, 0);
+}
 
 // Dispatch one vtable call: look the method up in the interface's table, throw
 // a named error if unimplemented, else run it.
@@ -794,6 +937,12 @@ void vbuffer_method(Machine& m, unsigned i) {
 }
 void texture_method(Machine& m, unsigned i) {
     dispatch<kTextureVtbl, 22>(m, i, "IDirect3DTexture9");
+}
+void surface_method(Machine& m, unsigned i) {
+    dispatch<kSurfaceVtbl, 11>(m, i, "IDirect3DSurface8");
+}
+void d3d8_texture_method(Machine& m, unsigned i) {
+    dispatch<kD3d8TexVtbl, 19>(m, i, "IDirect3DTexture8");
 }
 
 // ---- Direct3D8 frontend ----
@@ -895,10 +1044,11 @@ constexpr Method kD3d8DevVtbl[] = {
     {"GetCreationParameters",2,ret_ok},{"SetCursorProperties",4,ret_ok},{"SetCursorPosition",4,ret_ok},
     {"ShowCursor",2,ret_ok},{"CreateAdditionalSwapChain",3,ret_ok},{"Reset",2,dev_reset},
     {"Present",5,dev_present},{"GetBackBuffer",4,ret_ok},{"GetRasterStatus",2,ret_ok},
-    {"SetGammaRamp",3,ret_ok},{"GetGammaRamp",2,ret_ok},{"CreateTexture",8,dev_create_texture},
+    {"SetGammaRamp",3,ret_ok},{"GetGammaRamp",2,ret_ok},{"CreateTexture",8,d3d8_create_texture},
     {"CreateVolumeTexture",9,ret_ok},{"CreateCubeTexture",7,ret_ok},
     {"CreateVertexBuffer",6,dev_create_vertex_buffer},{"CreateIndexBuffer",6,dev_create_index_buffer},
-    {"CreateRenderTarget",7,ret_ok},{"CreateDepthStencilSurface",6,ret_ok},{"CreateImageSurface",5,ret_ok},
+    {"CreateRenderTarget",7,ret_ok},{"CreateDepthStencilSurface",6,ret_ok},
+    {"CreateImageSurface",5,dev_create_image_surface},
     {"CopyRects",6,ret_ok},{"UpdateTexture",3,ret_ok},{"GetFrontBuffer",2,ret_ok},
     {"SetRenderTarget",3,ret_ok},{"GetRenderTarget",2,ret_ok},{"GetDepthStencilSurface",2,ret_ok},
     {"BeginScene",1,ret_ok},{"EndScene",1,ret_ok},{"Clear",7,dev_clear},
@@ -915,7 +1065,8 @@ constexpr Method kD3d8DevVtbl[] = {
     {"SetCurrentTexturePalette",2,ret_ok},{"GetCurrentTexturePalette",2,ret_ok},
     {"DrawPrimitive",4,dev_draw_primitive},{"DrawIndexedPrimitive",6,d3d8_draw_indexed_primitive},
     {"DrawPrimitiveUP",5,dev_draw_primitive_up},{"DrawIndexedPrimitiveUP",9,ret_ok},
-    {"ProcessVertices",6,ret_ok},{"CreateVertexShader",5,ret_ok},{"SetVertexShader",2,dev_set_fvf},
+    {"ProcessVertices",6,ret_ok},{"CreateVertexShader",5,d3d8_create_vertex_shader},
+    {"SetVertexShader",2,d3d8_set_vertex_shader},
     {"GetVertexShader",2,ret_ok},{"DeleteVertexShader",2,ret_ok},{"SetVertexShaderConstant",4,ret_ok},
     {"GetVertexShaderConstant",4,ret_ok},{"GetVertexShaderDeclaration",4,ret_ok},
     {"GetVertexShaderFunction",4,ret_ok},{"SetStreamSource",4,d3d8_set_stream_source},
@@ -979,6 +1130,10 @@ void install(Machine& m) {
         if (!g_state.vbuffer_vtbl) { // shared VB/IB/texture vtables (D3D8 == D3D9)
             g_state.vbuffer_vtbl = m.create_com_vtable(14, vbuffer_method);
             g_state.texture_vtbl = m.create_com_vtable(22, texture_method);
+        }
+        if (!g_state.surface_vtbl) { // D3D8-only surfaces + D3D8-layout textures
+            g_state.surface_vtbl = m.create_com_vtable(11, surface_method);
+            g_state.d3d8_texture_vtbl = m.create_com_vtable(19, d3d8_texture_method);
         }
         if (!g_d3d8_vtbl) {
             g_d3d8_vtbl = m.create_com_vtable(16, d3d8_object_method);

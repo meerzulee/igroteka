@@ -484,6 +484,31 @@ inline constexpr uint16_t X87_C3 = 1 << 14;
 
 inline double& fst(Cpu& c, unsigned i) { return c.x87.st[(c.x87.top + i) & 7]; }
 
+// 80-bit extended (long double) <-> f64. Tier 0 keeps the register stack in f64,
+// so FLD/FSTP m80 (used by C long-double math and some CRT float printing) round
+// to double — matching the rest of the x87 model. Format: 64-bit mantissa
+// (explicit integer bit) then a 16-bit sign+biased-exponent word (bias 16383,
+// mantissa scaled by 2^-63).
+inline double ld80_to_f64(uint64_t mant, uint16_t se) {
+    int sign = (se >> 15) & 1, exp = se & 0x7FFF;
+    double v;
+    if (exp == 0x7FFF) v = (mant << 1) == 0 ? HUGE_VAL : std::nan("");
+    else if (exp == 0 && mant == 0) v = 0.0;
+    else v = std::ldexp((double)mant, exp - 16383 - 63);
+    return sign ? -v : v;
+}
+inline void f64_to_ld80(double v, uint64_t& mant, uint16_t& se) {
+    int sign = std::signbit(v) ? 1 : 0;
+    if (std::isnan(v)) { mant = 0xC000000000000000ull; se = (uint16_t)((sign << 15) | 0x7FFF); return; }
+    double a = std::fabs(v);
+    if (std::isinf(a)) { mant = 0x8000000000000000ull; se = (uint16_t)((sign << 15) | 0x7FFF); return; }
+    if (a == 0) { mant = 0; se = (uint16_t)(sign << 15); return; }
+    int e;
+    double m = std::frexp(a, &e);         // a = m * 2^e, m in [0.5, 1)
+    mant = (uint64_t)std::ldexp(m, 64);   // integer bit set
+    se = (uint16_t)((sign << 15) | ((e + 16382) & 0x7FFF));
+}
+
 // Round a double to integer per the control word's RC field (bits 10-11), as
 // FIST/FISTP/FRNDINT do. C's (int)float compiles to fistp under RC=11 (truncate)
 // via the _ftol helper, so honoring RC is load-bearing — not a rounding nicety.
@@ -587,6 +612,18 @@ void execX87(Cpu& c, const Bus& b, const Inst& in) {
                             (uint32_t)(int32_t)x87_round(fst(c, 0), c.x87.control));
                         fpop(c);
                         return;
+                    case 5: // fld m80fp
+                        fpush(c, ld80_to_f64(rd64(b, a), (uint16_t)rdW(b, a + 8, 2)));
+                        return;
+                    case 7: { // fstp m80fp
+                        uint64_t mant;
+                        uint16_t se;
+                        f64_to_ld80(fst(c, 0), mant, se);
+                        wr64(b, a, mant);
+                        wrW(b, a + 8, 2, se);
+                        fpop(c);
+                        return;
+                    }
                 }
                 throw UdFault{};
             case 0xDD:
