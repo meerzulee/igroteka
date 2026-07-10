@@ -148,11 +148,29 @@ uint32_t guest_write_bytes(Machine& m, uint32_t dst, const uint8_t* src, uint32_
 
 // Resolve a guest path against the cwd: a drive-qualified ("c:/...") or
 // root-anchored ("/...") path stays as-is; a relative one is joined to the cwd.
+// "." and ".." segments are normalized out ('..' never pops past the first
+// segment, i.e. the drive), so SetCurrentDirectory("..") and "..\\data" paths
+// canonicalize to the same VFS keys as their absolute forms (Codex finding).
 std::string resolve_path(const std::string& raw) {
     std::string p = norm_path(raw);
     bool absolute = (p.size() >= 2 && p[1] == ':') || (!p.empty() && p[0] == '/');
     if (!absolute) p = g_k.cwd + "/" + p;
-    return strip_slash(p);
+    std::vector<std::string> segs;
+    size_t i = 0;
+    while (i <= p.size()) {
+        size_t j = p.find('/', i);
+        if (j == std::string::npos) j = p.size();
+        std::string seg = p.substr(i, j - i);
+        if (seg == "..") { if (segs.size() > 1) segs.pop_back(); }
+        else if (!seg.empty() && seg != ".") segs.push_back(seg);
+        i = j + 1;
+    }
+    std::string out;
+    for (size_t k = 0; k < segs.size(); k++) {
+        if (k) out += '/';
+        out += segs[k];
+    }
+    return out;
 }
 // Populate a FindState with the immediate children of the directory named by a
 // wildcard pattern (e.g. "c:/rtw/data/*"): direct file children matching the
@@ -636,8 +654,14 @@ void install(Machine& m) {
             guest_write_bytes(m, buf, (const uint8_t*)full.data(), need);
             uint8_t z = 0; guest_write_bytes(m, buf + need, &z, 1);
             if (pFilePart) {
-                size_t bs = full.find_last_of('\\');
-                m.write32(pFilePart, bs == std::string::npos ? buf : buf + (uint32_t)bs + 1);
+                // A directory-form input (trailing slash) has no filename part →
+                // NULL, per Win32 (Codex finding). Otherwise point at the basename.
+                std::string raw = norm_path(m.read_cstr(m.arg(0)));
+                if (!raw.empty() && raw.back() == '/') m.write32(pFilePart, 0);
+                else {
+                    size_t bs = full.find_last_of('\\');
+                    m.write32(pFilePart, bs == std::string::npos ? buf : buf + (uint32_t)bs + 1);
+                }
             }
             m.ret(4, need);
             return true;

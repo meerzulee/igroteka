@@ -54,5 +54,11 @@ void start(void)
     DeleteFileA("a.pack");
     if (GetFileAttributesA("a.pack") != INVALID_FILE_ATTRIBUTES) ExitProcess(41);
 
+    /* ".." must normalize back to the parent, not append literally. */
+    if (!SetCurrentDirectoryA("..")) ExitProcess(43);
+    if (GetFileAttributesA("data\\b.pack") != FILE_ATTRIBUTE_NORMAL) ExitProcess(44);
+    if (GetFileAttributesA("data\\world\\..\\b.pack") != FILE_ATTRIBUTE_NORMAL)
+        ExitProcess(45);
+
     ExitProcess(42);
 }
