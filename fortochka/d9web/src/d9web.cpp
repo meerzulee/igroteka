@@ -27,7 +27,7 @@ constexpr uint32_t OBJ_REFCOUNT = 4;
 // install(), because run_entry() resets the guest heap after install().
 // FVF bits we recognize.
 constexpr uint32_t FVF_XYZ = 0x002, FVF_XYZRHW = 0x004, FVF_DIFFUSE = 0x040,
-                   FVF_TEX1 = 0x100;
+                   FVF_SPECULAR = 0x080, FVF_TEX1 = 0x100;
 
 // Texture object state (past the vtable ptr): refcount, backing VA, W, H.
 constexpr uint32_t TEX_REFCOUNT = 4, TEX_BACKING = 8, TEX_W = 12, TEX_H = 16;
@@ -98,8 +98,9 @@ void seed_render_states(uint32_t rs[256]) {
 // Vertex-buffer object state (past the vtable ptr at +0): refcount, the backing
 // store's guest VA, and its length in bytes. Index buffers reuse this layout
 // (same COM shape) plus one dword for the index format.
-constexpr uint32_t VB_REFCOUNT = 4, VB_BACKING = 8, VB_LENGTH = 12, IB_FORMAT = 16;
-constexpr uint32_t VB_STATE_BYTES = 12, IB_STATE_BYTES = 16;
+constexpr uint32_t VB_REFCOUNT = 4, VB_BACKING = 8, VB_LENGTH = 12, IB_FORMAT = 16,
+                   VB_FVF = 20;
+constexpr uint32_t VB_STATE_BYTES = 20, IB_STATE_BYTES = 20;
 
 // Reinterpret a 32-bit value as an IEEE-754 float (a float passed by value).
 inline float read_f32_bits(uint32_t u) {
@@ -248,26 +249,25 @@ void dev_clear(Machine& m, const Method& mm) {
 }
 void dev_present(Machine& m, const Method& mm) {
     g_state.presented = true;
-    // Debug proof capture: write the FIRST presented frame to a PPM if the env
-    // var names a path (native zhrun only; costs nothing when unset).
-    static bool dumped = false;
-    if (!dumped) {
-        const char* p = std::getenv("ZHWEB_DUMP_FIRST");
-        if (p && *p && !g_state.backbuffer.empty()) {
-            dumped = true;
-            if (FILE* f = std::fopen(p, "wb")) {
-                std::fprintf(f, "P6\n%u %u\n255\n", g_state.width, g_state.height);
-                for (uint32_t px : g_state.backbuffer) {
-                    unsigned char rgb[3] = {(unsigned char)(px >> 16),
-                                            (unsigned char)(px >> 8),
-                                            (unsigned char)px};
-                    std::fwrite(rgb, 1, 3, f);
-                }
-                std::fclose(f);
-                std::fprintf(stderr, "d9web: dumped first %ux%u frame to %s\n",
-                             g_state.width, g_state.height, p);
+    // Debug proof capture: overwrite the PPM every present (so the LAST frame
+    // before the run's budget is the most-developed one), if the env var names a
+    // path. Native zhrun only; costs nothing when unset.
+    static uint32_t frame = 0;
+    const char* p = std::getenv("ZHWEB_DUMP_FIRST");
+    if (p && *p && !g_state.backbuffer.empty()) {
+        if (FILE* f = std::fopen(p, "wb")) {
+            std::fprintf(f, "P6\n%u %u\n255\n", g_state.width, g_state.height);
+            for (uint32_t px : g_state.backbuffer) {
+                unsigned char rgb[3] = {(unsigned char)(px >> 16),
+                                        (unsigned char)(px >> 8),
+                                        (unsigned char)px};
+                std::fwrite(rgb, 1, 3, f);
             }
+            std::fclose(f);
         }
+        if ((++frame & 0x3F) == 1)
+            std::fprintf(stderr, "d9web: present #%u (%ux%u)\n", frame,
+                         g_state.width, g_state.height);
     }
     m.ret(mm.nargs, 0);
 }
@@ -412,6 +412,7 @@ Vtx vertex_screen(Machine& m, uint32_t p, const float* wvp) {
     uint32_t off = (fvf & FVF_XYZRHW) ? 16 : 12;
     uint32_t color_off = off;
     if (fvf & FVF_DIFFUSE) off += 4;
+    if (fvf & FVF_SPECULAR) off += 4; // specular color present but unused: skip it
     uint32_t uv_off = off;
     uint32_t col = (fvf & FVF_DIFFUSE) ? m.read32(p + color_off) : 0xFFFFFFFFu;
     float u = 0, vv = 0;
@@ -439,6 +440,10 @@ Vtx vertex_screen(Machine& m, uint32_t p, const float* wvp) {
 // and enforces the primitive cap + fill budget.
 template <typename Vaddr>
 void draw_core(Machine& m, uint32_t count, Vaddr vaddr) {
+    // D3D8 sets the vertex format via SetVertexShader(FVF); RTW leaves it 0 and
+    // relies on the bound vertex buffer's creation FVF, so fall back to that.
+    if (g_state.fvf == 0 && g_state.stream_vb)
+        g_state.fvf = m.read32(g_state.stream_vb + VB_FVF);
     const uint32_t fvf = g_state.fvf;
     // Position required, exactly one of XYZ / XYZRHW (mutually exclusive);
     // DIFFUSE + TEX1 optional. Other components (normals, > stream-0, extra tex
@@ -446,11 +451,11 @@ void draw_core(Machine& m, uint32_t count, Vaddr vaddr) {
     // vertex_screen parse, so an unsupported FVF never reaches the parser.
     bool has_xyz = fvf & FVF_XYZ, has_rhw = fvf & FVF_XYZRHW;
     bool ok = (has_xyz != has_rhw) &&
-              !(fvf & ~(FVF_XYZ | FVF_XYZRHW | FVF_DIFFUSE | FVF_TEX1));
+              !(fvf & ~(FVF_XYZ | FVF_XYZRHW | FVF_DIFFUSE | FVF_SPECULAR | FVF_TEX1));
     if (!ok)
-        return; // skip a draw whose FVF the tier-0 FFP path can't parse (e.g. a
-                // transient FVF 0, or normals/multi-texcoords) — keep the render
-                // loop alive rather than aborting the whole frame. Add on demand.
+    if (!ok)
+        return; // skip a draw whose FVF the tier-0 FFP path can't parse yet
+                // (normals, >1 texcoord, …) — keep the render loop alive.
     if (count > kMaxPrimitives)
         throw MachineError{"draw: PrimitiveCount too large"};
     g_state.ensure_bb();
@@ -529,6 +534,7 @@ void dev_create_vertex_buffer(Machine& m, const Method& mm) {
     m.write32(vb + VB_REFCOUNT, 1);
     m.write32(vb + VB_BACKING, backing);
     m.write32(vb + VB_LENGTH, length);
+    m.write32(vb + VB_FVF, m.arg(3)); // creation FVF (draw fallback when shader FVF=0)
     m.write32(ppVB, vb);
     m.ret(mm.nargs, 0);
 }
@@ -601,6 +607,33 @@ void tex_lock_rect(Machine& m, const Method& mm) {
 void dev_set_texture(Machine& m, const Method& mm) {
     // SetTexture(this, Stage, pTexture). Stage 0 honored; others recorded-noop.
     if (m.arg(1) == 0) g_state.tex_stage0 = m.arg(2);
+    m.ret(mm.nargs, 0);
+}
+// Copy the overlapping level-0 texels between two surface/texture objects (both
+// share the TEX_ layout: W/H/backing, A8R8G8B8). RTW stages texture pixels in an
+// image surface then blits them into a managed texture — without this the bound
+// textures stay black.
+void blit_backing(Machine& m, uint32_t src, uint32_t dst) {
+    if (!src || !dst) return;
+    uint32_t sw = m.read32(src + TEX_W), sh = m.read32(src + TEX_H);
+    uint32_t dw = m.read32(dst + TEX_W), dh = m.read32(dst + TEX_H);
+    uint32_t sb = m.read32(src + TEX_BACKING), db = m.read32(dst + TEX_BACKING);
+    if (!sb || !db) return;
+    uint32_t w = sw < dw ? sw : dw, h = sh < dh ? sh : dh;
+    for (uint32_t y = 0; y < h; y++)
+        for (uint32_t x = 0; x < w; x++)
+            m.write32(db + (y * dw + x) * 4, m.read32(sb + (y * sw + x) * 4));
+}
+void dev_copy_rects(Machine& m, const Method& mm) {
+    // CopyRects(this, pSrcSurface, pSrcRects, cRects, pDstSurface, pDstPoints):
+    // tier-0 copies the whole surface (rect list ignored — full-surface blits are
+    // what RTW's texture upload does).
+    blit_backing(m, m.arg(1), m.arg(4));
+    m.ret(mm.nargs, 0);
+}
+void dev_update_texture(Machine& m, const Method& mm) {
+    // UpdateTexture(this, pSourceTexture, pDestinationTexture): level-0 copy.
+    blit_backing(m, m.arg(1), m.arg(2));
     m.ret(mm.nargs, 0);
 }
 
@@ -1071,7 +1104,8 @@ constexpr Method kD3d8DevVtbl[] = {
     {"CreateVertexBuffer",6,dev_create_vertex_buffer},{"CreateIndexBuffer",6,dev_create_index_buffer},
     {"CreateRenderTarget",7,ret_ok},{"CreateDepthStencilSurface",6,ret_ok},
     {"CreateImageSurface",5,dev_create_image_surface},
-    {"CopyRects",6,ret_ok},{"UpdateTexture",3,ret_ok},{"GetFrontBuffer",2,ret_ok},
+    {"CopyRects",6,dev_copy_rects},{"UpdateTexture",3,dev_update_texture},
+    {"GetFrontBuffer",2,ret_ok},
     {"SetRenderTarget",3,ret_ok},{"GetRenderTarget",2,ret_ok},{"GetDepthStencilSurface",2,ret_ok},
     {"BeginScene",1,ret_ok},{"EndScene",1,ret_ok},{"Clear",7,dev_clear},
     {"SetTransform",3,dev_set_transform},{"GetTransform",3,ret_ok},{"MultiplyTransform",3,ret_ok},
