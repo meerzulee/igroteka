@@ -10,6 +10,7 @@
 #include "d9web/d9web.h"
 #include "k32web/k32web.h"
 #include "runtime/machine.h"
+#include "sysweb/sysweb.h"
 #include "u32web/u32web.h"
 
 using runtime::Machine;
@@ -41,6 +42,7 @@ int zhweb_run(const uint8_t* file, int len, int arena_mb) {
     k32web::install(m);
     u32web::install(m);
     d9web::install(m);
+    sysweb::install(m);
     // Seed one WM_PAINT so a windowed exe paints once; a console exe never pumps
     // and leaves it unconsumed.
     u32web::post_message(0x00010001, 0x000F /*WM_PAINT*/, 0, 0);
