@@ -4,7 +4,8 @@
 CC      := i686-w64-mingw32-gcc
 CFLAGS  := -Os -ffreestanding -fno-asynchronous-unwind-tables -fno-ident
 LDFLAGS := -nostdlib -Wl,--entry=_start -Wl,--subsystem,console \
-           -Wl,--image-base=0x400000 -lkernel32 -luser32 -lgdi32 -ld3d9 -ladvapi32 -lwinmm
+           -Wl,--image-base=0x400000 -lkernel32 -luser32 -lgdi32 -ld3d9 -ladvapi32 -lwinmm \
+           -lole32 -lwsock32 -ld3d8
 
 BIN := bin
 RUNGS := $(BIN)/hello.exe $(BIN)/window.exe $(BIN)/recurse.exe $(BIN)/seh.exe \
@@ -13,7 +14,7 @@ RUNGS := $(BIN)/hello.exe $(BIN)/window.exe $(BIN)/recurse.exe $(BIN)/seh.exe \
          $(BIN)/vbtri.exe $(BIN)/vb_evil.exe $(BIN)/fftri.exe $(BIN)/tex.exe $(BIN)/itri.exe $(BIN)/tex_evil.exe $(BIN)/krt.exe \
          $(BIN)/rstest.exe $(BIN)/gpa.exe $(BIN)/d3dinit.exe $(BIN)/winmgr.exe \
          $(BIN)/vfs.exe $(BIN)/crt.exe $(BIN)/dirscan.exe $(BIN)/reg.exe \
-         $(BIN)/pump.exe $(BIN)/crt2.exe
+         $(BIN)/pump.exe $(BIN)/crt2.exe $(BIN)/sysinit.exe
 
 all: $(RUNGS)
 

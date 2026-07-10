@@ -14,6 +14,7 @@
 #include "d9web/d9web.h"
 #include "k32web/k32web.h"
 #include "runtime/machine.h"
+#include "sysweb/sysweb.h"
 #include "u32web/u32web.h"
 
 using runtime::Machine;
@@ -59,6 +60,7 @@ int main(int argc, char** argv) {
     k32web::install(m);
     u32web::install(m);
     d9web::install(m);
+    sysweb::install(m);
 
     int code;
     try {

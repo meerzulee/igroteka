@@ -47,6 +47,7 @@ CASES = [
     ("reg.exe", "zhrun", [], 42, None),  # advapi32 registry shim: create/set/query + miss paths
     ("pump.exe", "zhrun", [], 42, None),  # pump adjuncts + winmm timing + GetDeviceCaps (batch 4)
     ("crt2.exe", "zhrun", [], 42, None),  # CRT tail: CompareString, MulDiv, time family, file mapping (batch 5)
+    ("sysinit.exe", "zhrun", [], 42, None),  # init-gate stubs: ole32, wsock32 byteorder, d3d8 decline (batch 6)
 ]
 
 

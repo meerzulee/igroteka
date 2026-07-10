@@ -4,5 +4,5 @@ target_link_libraries(runtime PUBLIC zhelezo peload)
 target_compile_options(runtime PRIVATE -Wall -Wextra)
 
 add_executable(zhrun zhrun.cpp)
-target_link_libraries(zhrun runtime k32web u32web d9web)
+target_link_libraries(zhrun runtime k32web u32web d9web sysweb)
 target_compile_options(zhrun PRIVATE -Wall -Wextra)
