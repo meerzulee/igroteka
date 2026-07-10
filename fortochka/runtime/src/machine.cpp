@@ -419,14 +419,15 @@ Machine::Slice Machine::drive_slice(uint32_t sentinel_slot, uint64_t slice_steps
                 char buf[320];
                 std::snprintf(buf, sizeof buf,
                               "cpu fault kind=%d eip=%x bytes=%02x %02x %02x %02x "
-                              "esp=%x ebp=%x eax=%x ebx=%x ecx=%x edx=%x "
-                              "stk=[%x %x %x %x %x %x %x %x]",
+                              "esp=%x ebp=%x eax=%x ebx=%x ecx=%x edx=%x esi=%x edi=%x "
+                              "esi4=%x stk=[%x %x %x %x %x %x]",
                               (int)r.fault, cpu_.eip, read32(cpu_.eip) & 0xFF,
                               (read32(cpu_.eip) >> 8) & 0xFF, (read32(cpu_.eip) >> 16) & 0xFF,
                               (read32(cpu_.eip) >> 24) & 0xFF, sp, cpu_.gpr[EBP],
                               cpu_.gpr[EAX], cpu_.gpr[EBX], cpu_.gpr[ECX], cpu_.gpr[EDX],
+                              cpu_.gpr[ESI], cpu_.gpr[EDI], read32(cpu_.gpr[ESI] + 4),
                               read32(sp), read32(sp + 4), read32(sp + 8), read32(sp + 12),
-                              read32(sp + 16), read32(sp + 20), read32(sp + 24), read32(sp + 28));
+                              read32(sp + 16), read32(sp + 20));
                 throw MachineError{buf};
             }
             case Exit::Steps:
