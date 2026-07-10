@@ -1,8 +1,10 @@
 /* sysinit.exe — corpus rung: the init-gate stub DLLs (RTW batch 6). Exercises
  * ole32 (CoInitialize/CoTaskMemAlloc/CoUninitialize), wsock32's real byte-order
- * helpers + WSAStartup, and d3d8 declining (Direct3DCreate8 -> NULL so a game
- * takes the D3D9 path). steam_api has no import lib to link against, so it is
- * covered when RTW itself boots, not here. Exit 42 = pass.
+ * helpers + WSAStartup, and d3d8 (Direct3DCreate8 -> a non-null fake IDirect3D8:
+ * RTW REQUIRES a working D3D8 stack at startup — its "DirectX 9" self-check
+ * creates + enumerates a D3D8 device and exits if that fails). steam_api has no
+ * import lib to link against, so it is covered when RTW itself boots, not here.
+ * Exit 42 = pass.
  */
 #include <windows.h>
 #include <winsock.h>
@@ -29,8 +31,8 @@ void start(void)
     if (!p) ExitProcess(17);
     CoTaskMemFree(p);
 
-    /* d3d8 declines → the game must fall back to D3D9. */
-    if (Direct3DCreate8(220) != NULL) ExitProcess(18);
+    /* d3d8 hands back a non-null IDirect3D8 (RTW's startup requires it). */
+    if (Direct3DCreate8(220) == NULL) ExitProcess(18);
 
     WSACleanup();
     CoUninitialize();
