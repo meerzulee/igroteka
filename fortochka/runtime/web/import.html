@@ -34,6 +34,8 @@
     <button id="pick">Choose RomeTW folder</button>
     <button id="check">Check OPFS status</button>
     <button id="clear">Clear OPFS</button>
+    <!-- Safari/Firefox fallback: no showDirectoryPicker, so pick a folder here -->
+    <input type="file" id="folderInput" webkitdirectory directory multiple style="display:none">
   </div>
   <div id="status">idle — pick the folder that contains RomeTW.exe and data/</div>
   <div id="barWrap"><div id="bar"></div></div>
@@ -81,13 +83,23 @@ function setBusy(busy) {
 }
 
 // ---- feature guard ------------------------------------------------------
+// OPFS is required. For the folder picker we accept EITHER showDirectoryPicker
+// (Chromium) OR a <input webkitdirectory> (Safari/Firefox) — same as the ZH
+// setup wizard, which is why ZH imports fine in Safari.
 
-const supported = !!(window.showDirectoryPicker && navigator.storage && navigator.storage.getDirectory);
+const folderInput = document.getElementById('folderInput');
+const hasOPFS = !!(navigator.storage && navigator.storage.getDirectory);
+const hasDirPicker = !!window.showDirectoryPicker;
+const hasWebkitDir = 'webkitdirectory' in folderInput;
+const supported = hasOPFS && (hasDirPicker || hasWebkitDir);
 if (!supported) {
   setStatus('unsupported browser', 'err');
-  log('This browser lacks the File System Access API and/or OPFS.', 'e');
-  log('Use desktop Chrome or Edge — showDirectoryPicker() and navigator.storage.getDirectory() are required.', 'e');
+  if (!hasOPFS) log('This browser lacks OPFS (navigator.storage.getDirectory).', 'e');
+  else log('This browser cannot pick a folder (no showDirectoryPicker or webkitdirectory).', 'e');
+  log('Use a recent Safari, Chrome, or Edge.', 'e');
   setBusy(true);
+} else if (!hasDirPicker) {
+  log('Using the folder picker (Safari/Firefox mode).', 'i');
 }
 
 // ---- progress state (throttled rendering) -------------------------------
@@ -112,73 +124,87 @@ function render(force) {
   }
 }
 
-// ---- source walk: count pass --------------------------------------------
-
-async function countDir(dirHandle) {
-  for await (const [, handle] of dirHandle.entries()) {
-    if (handle.kind === 'directory') {
-      await countDir(handle);
-    } else {
-      state.seen++;
-      render();
-    }
-  }
-}
-
-// ---- source walk: copy pass ---------------------------------------------
+// ---- collect entries from either source ---------------------------------
+// Both normalize to { relPath, getFile } where relPath is relative to the game
+// root ("data/foo.cas", "RomeTW.exe") with EXACT case. OPFS mirrors it at
+// rtw/<relPath>. A <input webkitdirectory> gives paths like "<top>/data/foo.cas"
+// (leading folder name), which we strip; showDirectoryPicker gives paths already
+// relative to the picked dir.
 
 let nextMilestone = 1000;
 
-async function copyDir(srcDir, dstDir, relPath, depth) {
-  for await (const [name, handle] of srcDir.entries()) {
-    const path = relPath ? relPath + '/' + name : name; // exact case preserved
-    if (handle.kind === 'directory') {
-      if (depth === 0) log('entering ' + path + '/', 'i');
-      let dstSub;
-      try {
-        dstSub = await dstDir.getDirectoryHandle(name, { create: true });
-      } catch (e) {
-        state.failed++;
-        log('FAIL mkdir ' + path + ': ' + (e.message || e), 'e');
-        continue; // skip whole subtree we cannot create
-      }
-      await copyDir(handle, dstSub, path, depth + 1);
-    } else {
-      state.current = path;
-      try {
-        const file = await handle.getFile();
-        const dstFile = await dstDir.getFileHandle(name, { create: true });
-        const writable = await dstFile.createWritable();
-        await writable.write(file);
-        await writable.close();
-        state.copied++;
-        state.bytes += file.size;
-        if (state.copied >= nextMilestone) {
-          log(state.copied + ' files copied · ' + fmtBytes(state.bytes), 'g');
-          nextMilestone += 1000;
-        }
-      } catch (e) {
-        state.failed++;
-        log('FAIL ' + path + ': ' + (e.message || e), 'e');
-      }
-      render();
+async function collectFromDirHandle(dirHandle) {
+  const out = [];
+  async function walk(d, prefix, depth) {
+    for await (const [name, h] of d.entries()) {
+      const rel = prefix ? prefix + '/' + name : name;
+      if (h.kind === 'directory') { if (depth === 0) log('scanning ' + rel + '/', 'i'); await walk(h, rel, depth + 1); }
+      else { out.push({ relPath: rel, getFile: () => h.getFile() }); state.seen++; render(); }
     }
+  }
+  await walk(dirHandle, '', 0);
+  return out;
+}
+
+function collectFromFileList(fileList) {
+  const out = [];
+  for (const f of fileList) {
+    const parts = (f.webkitRelativePath || f.name).split('/');
+    parts.shift();                       // drop the picked top-folder segment
+    const relPath = parts.join('/');
+    if (!relPath) continue;
+    out.push({ relPath, getFile: async () => f });
+    state.seen++;
+  }
+  render(true);
+  return out;
+}
+
+// ---- copy into OPFS (dir-handle cache; 42k files share few dirs) ---------
+
+async function copyEntries(entries, dstRoot) {
+  const dirCache = new Map();            // "data/settlement_plans" -> handle
+  async function ensureDir(relDir) {
+    if (relDir === '') return dstRoot;
+    if (dirCache.has(relDir)) return dirCache.get(relDir);
+    let dir = dstRoot, acc = '';
+    for (const seg of relDir.split('/')) {
+      acc = acc ? acc + '/' + seg : seg;
+      let h = dirCache.get(acc);
+      if (!h) { h = await dir.getDirectoryHandle(seg, { create: true }); dirCache.set(acc, h); }
+      dir = h;
+    }
+    return dir;
+  }
+  for (const e of entries) {
+    state.current = e.relPath;
+    try {
+      const slash = e.relPath.lastIndexOf('/');
+      const relDir = slash < 0 ? '' : e.relPath.slice(0, slash);
+      const base = slash < 0 ? e.relPath : e.relPath.slice(slash + 1);
+      const dstDir = await ensureDir(relDir);
+      const file = await e.getFile();
+      const dstFile = await dstDir.getFileHandle(base, { create: true });
+      const w = await dstFile.createWritable();
+      await w.write(file);
+      await w.close();
+      state.copied++;
+      state.bytes += file.size;
+      if (state.copied >= nextMilestone) {
+        log(state.copied + ' files copied · ' + fmtBytes(state.bytes), 'g');
+        nextMilestone += 1000;
+      }
+    } catch (err) {
+      state.failed++;
+      log('FAIL ' + e.relPath + ': ' + (err.message || err), 'e');
+    }
+    render();
   }
 }
 
-// ---- import -------------------------------------------------------------
+// ---- import driver (shared by both source paths) ------------------------
 
-pickBtn.onclick = async () => {
-  let srcRoot;
-  try {
-    // must be called directly from the user gesture, on the main thread
-    srcRoot = await window.showDirectoryPicker({ mode: 'read' });
-  } catch (e) {
-    if (e && e.name === 'AbortError') { log('folder pick cancelled', 'i'); return; }
-    log('folder picker failed: ' + (e && e.message || e), 'e');
-    return;
-  }
-
+async function runImport(collect, label) {
   setBusy(true);
   state.phase = 'scanning';
   state.seen = state.total = state.copied = state.failed = state.bytes = 0;
@@ -186,33 +212,32 @@ pickBtn.onclick = async () => {
   nextMilestone = 1000;
   barEl.style.width = '0%';
   currentEl.textContent = '';
-
   try {
-    log('picked "' + srcRoot.name + '" — counting files…', 'i');
+    log('picked "' + label + '" — scanning…', 'i');
     if (navigator.storage.persist) {
       const persisted = await navigator.storage.persist();
-      log('persistent storage: ' + (persisted ? 'granted' : 'not granted (best-effort eviction rules apply)'),
+      log('persistent storage: ' + (persisted ? 'granted' : 'not granted (best-effort eviction)'),
           persisted ? 'g' : null);
     }
-
-    await countDir(srcRoot);
+    const entries = await collect();
     state.total = state.seen;
     render(true);
     log('scan complete: ' + state.total + ' files', 'i');
+    if (!state.total) { setStatus('no files found — pick the folder that contains RomeTW.exe', 'err'); return; }
 
     const opfsRoot = await navigator.storage.getDirectory();
     const dstRoot = await opfsRoot.getDirectoryHandle(OPFS_ROOT_NAME, { create: true });
 
     state.phase = 'copying';
     const t0 = performance.now();
-    await copyDir(srcRoot, dstRoot, '', 0);
+    await copyEntries(entries, dstRoot);
 
     // completion marker — the read side checks rtw/.import-complete
     const meta = { files: state.copied, bytes: state.bytes, importedAtMs: Date.now() };
     const markerHandle = await dstRoot.getFileHandle(MARKER_NAME, { create: true });
-    const writable = await markerHandle.createWritable();
-    await writable.write(JSON.stringify(meta));
-    await writable.close();
+    const mw = await markerHandle.createWritable();
+    await mw.write(JSON.stringify(meta));
+    await mw.close();
 
     state.phase = 'done';
     barEl.style.width = '100%';
@@ -220,13 +245,12 @@ pickBtn.onclick = async () => {
     const secs = ((performance.now() - t0) / 1000).toFixed(1);
     if (state.failed === 0) {
       setStatus('Import complete: ' + state.copied + ' files, ' + fmtBytes(state.bytes) +
-                '. You can now open rtw.html', 'ok');
+                '. You can now play Rome: Total War.', 'ok');
       log('import complete in ' + secs + 's — ' + state.copied + ' files, ' + fmtBytes(state.bytes), 'g');
     } else {
-      setStatus('Import finished with ' + state.failed + ' failures: ' + state.copied + ' files copied, ' +
+      setStatus('Import finished with ' + state.failed + ' failures: ' + state.copied + ' copied, ' +
                 fmtBytes(state.bytes) + '. Check the log.', 'err');
-      log('import finished in ' + secs + 's — ' + state.copied + ' copied, ' + state.failed +
-          ' FAILED (see errors above)', 'e');
+      log('import finished in ' + secs + 's — ' + state.copied + ' copied, ' + state.failed + ' FAILED', 'e');
     }
   } catch (e) {
     state.phase = 'error';
@@ -235,6 +259,29 @@ pickBtn.onclick = async () => {
   } finally {
     setBusy(false);
   }
+}
+
+// ---- pick: showDirectoryPicker (Chromium) OR folder <input> (Safari) ----
+
+pickBtn.onclick = async () => {
+  if (hasDirPicker) {
+    let srcRoot;
+    try { srcRoot = await window.showDirectoryPicker({ mode: 'read' }); }
+    catch (e) {
+      if (e && e.name === 'AbortError') { log('folder pick cancelled', 'i'); return; }
+      log('folder picker failed: ' + (e && e.message || e), 'e'); return;
+    }
+    await runImport(() => collectFromDirHandle(srcRoot), srcRoot.name);
+  } else {
+    folderInput.value = '';
+    folderInput.click(); // resolves in folderInput.onchange
+  }
+};
+
+folderInput.onchange = () => {
+  if (!folderInput.files || !folderInput.files.length) return;
+  const top = (folderInput.files[0].webkitRelativePath || '').split('/')[0] || 'selection';
+  runImport(() => Promise.resolve(collectFromFileList(folderInput.files)), top);
 };
 
 // ---- status check -------------------------------------------------------
