@@ -32,24 +32,54 @@ const char* wsock_ordinal(const std::string& name) {
     }
 }
 
-// A single self-referential fake object stands in for every Steam interface
-// (ISteamClient/User/Friends/...). Its vtable is 256 __thiscall thunks that each
-// return `this` (ecx) and pop nothing: so a method returning an interface hands
-// back the same non-null object (chained GetISteam* never yields null), a method
-// returning a handle/bool hands back a non-null/nonzero token, and nothing RTW
-// dereferences is ever null. Created lazily (heap is stable after run_entry).
-uint32_t g_steam_obj = 0;
-uint32_t ensure_steam(Machine& m) {
-    if (!g_steam_obj) {
-        uint32_t vtbl = m.create_com_vtable(256, [](Machine& m, unsigned) {
-            // __thiscall: `this` is in ECX, args (unknown count) on the stack.
-            // Return `this` (always non-null); pop nothing. Arg-count drift is
-            // the known risk — refined per-method if the boot needs it.
-            m.ret(0, m.cpu().gpr[zhelezo::ECX]);
-        });
-        g_steam_obj = m.create_com_instance(vtbl, 4);
+// Per-interface fake Steam objects. Each getter (SteamClient/User/...) returns
+// its own COM object; the vtable is 256 __thiscall thunks whose handler knows
+// the interface, so a method whose semantics matter (a struct-return, a bool)
+// is served correctly while everything else defaults to a safe 0. Method args
+// arrive on the stack; `this` is in ECX (thiscall). Created lazily.
+enum SteamIface { SC_CLIENT, SC_USER, SC_FRIENDS, SC_MATCHMAKING, SC_NETWORKING,
+                  SC_GAMESERVER, SC_GSNETWORKING, SC_COUNT };
+uint32_t g_steam_iface[SC_COUNT] = {};
+
+void steam_method(Machine& m, int iface, unsigned method) {
+    uint32_t sp = m.cpu().gpr[zhelezo::ESP];
+    // ISteamUser::GetSteamID() — MSVC x86 struct return: the caller pushed a
+    // hidden pointer to a CSteamID buffer (at [esp+4]); write a plausible
+    // offline id there, return EAX = that buffer, and pop the hidden pointer.
+    if (iface == SC_USER && method == 2) {
+        uint32_t buf = m.read32(sp + 4);
+        m.write32(buf, 0x00000001);     // account id = 1
+        m.write32(buf + 4, 0x01100001); // universe=public, type=individual, inst=1
+        m.ret(1, buf);
+        return;
     }
-    return g_steam_obj;
+    // ISteamClient slot 20 takes a callback pointer arg and its result is
+    // ignored by RTW — pop the one arg, return 0.
+    if (iface == SC_CLIENT && method == 20) { m.ret(1, 0); return; }
+    // Unknown method: return 0, pop nothing (an ebp-framed caller heals any
+    // stack drift via `leave`). Logged so the next boot wall names it.
+    std::fprintf(stderr, "steam iface=%d vtbl[%u] -> 0 (default)\n", iface, method);
+    m.ret(0, 0);
+}
+
+uint32_t steam_obj(Machine& m, int iface) {
+    if (!g_steam_iface[iface]) {
+        uint32_t vt = m.create_com_vtable(
+            256, [iface](Machine& m, unsigned method) { steam_method(m, iface, method); });
+        g_steam_iface[iface] = m.create_com_instance(vt, 8);
+    }
+    return g_steam_iface[iface];
+}
+// Map a flat-API getter name to its interface id.
+int steam_iface_of(const std::string& name) {
+    if (name == "SteamClient") return SC_CLIENT;
+    if (name == "SteamUser") return SC_USER;
+    if (name == "SteamFriends") return SC_FRIENDS;
+    if (name == "SteamMatchmaking") return SC_MATCHMAKING;
+    if (name == "SteamNetworking") return SC_NETWORKING;
+    if (name == "SteamGameServer") return SC_GAMESERVER;
+    if (name == "SteamGameServerNetworking") return SC_GSNETWORKING;
+    return -1;
 }
 
 bool steam_api(Machine& m, const std::string& name) {
@@ -63,16 +93,13 @@ bool steam_api(Machine& m, const std::string& name) {
         m.ret(0, 1); // true
         return true;
     }
-    // Interface getters return null; RTW null-checks them after a failed Init.
-    // Logged so a boot that dereferences one tells us to synthesize an object.
-    static const char* kGetters[] = {
-        "SteamUser", "SteamClient", "SteamFriends", "SteamMatchmaking",
-        "SteamNetworking", "SteamGameServer", "SteamGameServerNetworking"};
-    for (auto g : kGetters)
-        if (name == g) {
-            m.ret(0, ensure_steam(m)); // a non-null self-referential fake
-            return true;
-        }
+    // Interface getters return a per-interface fake object (see steam_obj).
+    if (int iface = steam_iface_of(name); iface >= 0) {
+        // A 0-arg accessor: return the interface object, pop nothing (leave any
+        // hidden struct-return buffer the caller pushed for the next method).
+        m.ret(0, steam_obj(m, iface));
+        return true;
+    }
     // Shutdown / callbacks / (un)register: all no-op void or ignorable.
     static const char* kVoids[] = {
         "SteamAPI_Shutdown", "SteamAPI_RunCallbacks", "SteamAPI_RegisterCallback",
