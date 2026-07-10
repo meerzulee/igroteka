@@ -68,6 +68,14 @@ const peload::Image& Machine::load(const uint8_t* file, size_t len,
     return image_;
 }
 
+uint32_t Machine::resolve_proc(const std::string& name) const {
+    // Name-only match (module handles are all the image base today, so we can't
+    // scope by DLL; import names are effectively unique across the DLLs we HLE).
+    for (const auto& imp : image_.imports)
+        if (imp.name == name) return hostcall_addr(imp.slot);
+    return 0;
+}
+
 // ---- memory + stdcall helpers ----
 
 uint32_t Machine::read32(uint32_t va) const {

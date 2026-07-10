@@ -60,6 +60,16 @@ class Machine {
     void write32(uint32_t va, uint32_t v);
     std::string read_cstr(uint32_t va, uint32_t max = 4096) const;
 
+    // Resolve a runtime GetProcAddress request to a callable guest address, or 0
+    // if unresolved. Matches by name against the static import table: those
+    // slots are already IAT-patched to a hostcall thunk and known to be served
+    // by an HLE handler, so returning the thunk address is safe and calling it
+    // dispatches exactly as a normal import would. A name the program did not
+    // statically import returns 0 (GetProcAddress "not found") — honest
+    // graceful degradation, never a pointer we cannot service. Dynamic-only
+    // exports become resolvable by promoting them to a forced static import.
+    uint32_t resolve_proc(const std::string& name) const;
+
     // TIB / SEH. tib_addr() is the guest linear address of the Thread
     // Information Block; fs_base points here, so fs:[0] is the SEH chain head.
     // The SEH dispatcher (k32web) borrows guest scratch above the TIB fields

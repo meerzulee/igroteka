@@ -310,7 +310,16 @@ void install(Machine& m) {
             m.ret(1, m.arg(0) == 0 ? 0x00400000 : 0x00400000);
             return true;
         }
-        if (name == "GetProcAddress") { m.ret(2, 0); return true; } // not resolvable yet
+        if (name == "GetProcAddress") {
+            // GetProcAddress(hModule, lpProcName). An ordinal request (name ptr
+            // with a zero high word) is unsupported → 0. Otherwise resolve the
+            // name against the static import table; 0 = "not found" so the guest
+            // gracefully skips the optional API.
+            uint32_t proc = m.arg(1);
+            uint32_t addr = (proc >> 16) == 0 ? 0 : m.resolve_proc(m.read_cstr(proc));
+            m.ret(2, addr);
+            return true;
+        }
         if (name == "LoadLibraryA" || name == "LoadLibraryW" ||
             name == "LoadLibraryExA") {
             m.ret(name == "LoadLibraryExA" ? 3 : 1, 0x10000000); // fake module
