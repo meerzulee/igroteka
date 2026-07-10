@@ -72,5 +72,12 @@ void start(void)
     if (g_mtx_saw != 0x55) ExitProcess(24);
     if (!GetExitCodeThread(t3, &code) || code != 1) ExitProcess(25);
 
+    /* 4. Finite timeout with no other runnable thread must TIME OUT (the
+     * scheduler jumps the virtual clock), not deadlock. */
+    {
+        HANDLE never = CreateEventA(NULL, TRUE, FALSE, NULL); /* stays unsignaled */
+        if (WaitForSingleObject(never, 50) != WAIT_TIMEOUT) ExitProcess(26);
+    }
+
     ExitProcess(42);
 }

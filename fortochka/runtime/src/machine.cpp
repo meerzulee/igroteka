@@ -472,14 +472,25 @@ int Machine::scheduler_run(uint64_t slice) {
         }
         if (pick < 0) {
             bool any_live = false, any_blocked = false;
+            uint64_t next_deadline = UINT64_MAX;
             for (auto& t : threads_) {
                 if (t.st != SchedThread::Done) any_live = true;
-                if (t.st == SchedThread::Blocked) any_blocked = true;
+                if (t.st == SchedThread::Blocked) {
+                    any_blocked = true;
+                    if (t.wait_deadline < next_deadline) next_deadline = t.wait_deadline;
+                }
             }
             if (!any_live) return (int)exit_code; // everything finished
+            // Nobody can run, but a blocked thread has a finite timeout: jump the
+            // virtual clock to it so its wait times out (rather than spinning or
+            // false-flagging a deadlock — the clock only advances when a thread
+            // runs, and here none can).
+            if (next_deadline != UINT64_MAX) {
+                proc_icount_ = next_deadline;
+                continue; // step 1 next iteration completes it as WAIT_TIMEOUT
+            }
             if (any_blocked)
-                throw MachineError{"all threads blocked (deadlock)"};
-            // Only suspended threads remain and none can wake them → also stuck.
+                throw MachineError{"all threads blocked on INFINITE waits (deadlock)"};
             throw MachineError{"no runnable thread (all suspended)"};
         }
 
