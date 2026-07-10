@@ -165,7 +165,8 @@ devbtn.onclick = () => {
   localStorage.setItem('ig-debug', IG_DEBUG ? '1' : '0');
 };
 addEventListener('error', (e) => dbg('window error: ' + (e.message || e) +
-  (e.filename ? ' @ ' + e.filename + ':' + e.lineno : ''), 'e'));
+  (e.filename ? ' @ ' + e.filename + ':' + e.lineno : '') +
+  (e.error && e.error.stack ? '\n' + e.error.stack : ''), 'e'));
 addEventListener('unhandledrejection', (e) =>
   dbg('unhandled rejection: ' + (e.reason && e.reason.message || e.reason || e), 'e'));
 dbg('page loaded; worker starting', 'i');
@@ -232,7 +233,7 @@ function hideLoader() {
 
 // ---- worker ----
 let worker;
-try { worker = new Worker('worker.js'); }
+try { worker = new Worker('worker.js' + (IG_DEBUG ? '?verbose=1' : '')); }
 catch (e) { showDialog('Rome: Total War could not start a worker.<br><br><span style="color:#555">' + e + '</span>', { reload: true }); }
 
 if (worker) {
@@ -243,6 +244,7 @@ if (worker) {
       (e.message || e) + '</span>', { reload: true });
   };
   worker.onmessage = (e) => {
+   try {
     const m = e.data;
     switch (m.type) {
       case 'ready':
@@ -308,6 +310,10 @@ if (worker) {
           '<span style="color:#555">' + m.msg + '</span>', { reload: true });
         break;
     }
+   } catch (err) {
+     dbg('message handler threw on "' + (e.data && e.data.type) + '": ' +
+         (err && err.stack || err), 'e');
+   }
   };
 }
 </script>
