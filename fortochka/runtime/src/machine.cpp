@@ -1,5 +1,6 @@
 #include "runtime/machine.h"
 
+#include <cctype>
 #include <cstring>
 
 namespace runtime {
@@ -68,11 +69,27 @@ const peload::Image& Machine::load(const uint8_t* file, size_t len,
     return image_;
 }
 
+// Normalize a DLL name for comparison: lowercase, drop a trailing ".dll".
+static std::string norm_dll(std::string s) {
+    for (auto& c : s) c = (char)std::tolower((unsigned char)c);
+    if (s.size() > 4 && s.compare(s.size() - 4, 4, ".dll") == 0)
+        s.resize(s.size() - 4);
+    return s;
+}
+
 uint32_t Machine::resolve_proc(const std::string& name) const {
-    // Name-only match (module handles are all the image base today, so we can't
-    // scope by DLL; import names are effectively unique across the DLLs we HLE).
+    // Name-only match (for the image's own handle / an unknown handle): import
+    // names are effectively unique across the DLLs we HLE.
     for (const auto& imp : image_.imports)
         if (imp.name == name) return hostcall_addr(imp.slot);
+    return 0;
+}
+uint32_t Machine::resolve_proc(const std::string& dll,
+                               const std::string& name) const {
+    std::string want = norm_dll(dll);
+    for (const auto& imp : image_.imports)
+        if (imp.name == name && norm_dll(imp.dll) == want)
+            return hostcall_addr(imp.slot);
     return 0;
 }
 

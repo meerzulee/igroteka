@@ -1,7 +1,9 @@
 #include "k32web/k32web.h"
 
+#include <cctype>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 namespace k32web {
 
@@ -19,8 +21,28 @@ struct K32 {
     bool tls_used[64] = {};
     uint32_t cmdline = 0;    // cached GetCommandLineA guest string
     uint32_t heap_handle = 0x00E70001; // one process heap pseudo-handle
+    // Interned DLL names for LoadLibrary/GetModuleHandle; the handle is
+    // MODULE_TAG + table index, so GetProcAddress can scope a lookup to the
+    // module the guest actually asked about.
+    std::vector<std::string> modules;
 };
 K32 g_k;
+
+// Synthetic module-handle base. Distinct from the image base (0x400000) and the
+// opaque wide-name fake (0x10000000); index stays small so no bit overlap.
+constexpr uint32_t MODULE_TAG = 0x40000000u;
+
+// Intern a DLL name (normalized: lowercase, no trailing ".dll") → module handle.
+uint32_t module_handle(const std::string& raw) {
+    std::string name = raw;
+    for (auto& c : name) c = (char)std::tolower((unsigned char)c);
+    if (name.size() > 4 && name.compare(name.size() - 4, 4, ".dll") == 0)
+        name.resize(name.size() - 4);
+    for (size_t i = 0; i < g_k.modules.size(); i++)
+        if (g_k.modules[i] == name) return MODULE_TAG + (uint32_t)i;
+    g_k.modules.push_back(name);
+    return MODULE_TAG + (uint32_t)(g_k.modules.size() - 1);
+}
 
 // Write a NUL-terminated string into freshly-allocated guest memory, return VA.
 uint32_t guest_strdup(Machine& m, const char* s) {
@@ -305,24 +327,47 @@ void install(Machine& m) {
         if (name == "Sleep") { m.ret(1, 0); return true; }
 
         // ---- module / process info ----
-        if (name == "GetModuleHandleA" || name == "GetModuleHandleW") {
-            // NULL name = the process image itself (base 0x400000).
-            m.ret(1, m.arg(0) == 0 ? 0x00400000 : 0x00400000);
+        if (name == "GetModuleHandleA") {
+            // NULL name = the process image itself (base 0x400000); a named
+            // module interns to a distinct handle carrying its DLL identity.
+            uint32_t p = m.arg(0);
+            m.ret(1, p == 0 ? 0x00400000 : module_handle(m.read_cstr(p)));
+            return true;
+        }
+        if (name == "GetModuleHandleW") {
+            // Wide name; not decoded here — NULL and named both map to the image
+            // base (a distinct-module W lookup is rare in the games we target).
+            m.ret(1, 0x00400000);
             return true;
         }
         if (name == "GetProcAddress") {
             // GetProcAddress(hModule, lpProcName). An ordinal request (name ptr
-            // with a zero high word) is unsupported → 0. Otherwise resolve the
-            // name against the static import table; 0 = "not found" so the guest
-            // gracefully skips the optional API.
-            uint32_t proc = m.arg(1);
-            uint32_t addr = (proc >> 16) == 0 ? 0 : m.resolve_proc(m.read_cstr(proc));
+            // with a zero high word) is unsupported → 0. With a real interned
+            // module handle, scope the name to that DLL so a cross-DLL name
+            // collision can't resolve to the wrong ABI's thunk; the image base
+            // or an unknown handle falls back to a name-only match. 0 = "not
+            // found" so the guest gracefully skips the optional API.
+            uint32_t hmod = m.arg(0), proc = m.arg(1), addr = 0;
+            if ((proc >> 16) != 0) {
+                std::string pname = m.read_cstr(proc);
+                if (hmod >= MODULE_TAG && (hmod - MODULE_TAG) < g_k.modules.size())
+                    addr = m.resolve_proc(g_k.modules[hmod - MODULE_TAG], pname);
+                else
+                    addr = m.resolve_proc(pname);
+            }
             m.ret(2, addr);
             return true;
         }
-        if (name == "LoadLibraryA" || name == "LoadLibraryW" ||
-            name == "LoadLibraryExA") {
-            m.ret(name == "LoadLibraryExA" ? 3 : 1, 0x10000000); // fake module
+        if (name == "LoadLibraryA" || name == "LoadLibraryExA") {
+            // Return an interned handle for the named DLL (arg0 for both; ExA's
+            // extra args are hFile/flags). GetProcAddress then scopes to it.
+            uint32_t p = m.arg(0);
+            uint32_t h = p ? module_handle(m.read_cstr(p)) : 0x00400000;
+            m.ret(name == "LoadLibraryExA" ? 3 : 1, h);
+            return true;
+        }
+        if (name == "LoadLibraryW" || name == "LoadLibraryExW") {
+            m.ret(name == "LoadLibraryExW" ? 3 : 1, 0x10000000); // wide: opaque fake
             return true;
         }
         if (name == "FreeLibrary") { m.ret(1, 1); return true; }

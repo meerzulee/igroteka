@@ -69,6 +69,11 @@ class Machine {
     // graceful degradation, never a pointer we cannot service. Dynamic-only
     // exports become resolvable by promoting them to a forced static import.
     uint32_t resolve_proc(const std::string& name) const;
+    // Same, but scoped to a specific module: only imports from `dll` match (DLL
+    // names compared case-insensitively, ignoring a trailing ".dll"). Used when
+    // GetProcAddress has a real module handle, so a name that collides across
+    // DLLs with a different ABI can't resolve to the wrong module's thunk.
+    uint32_t resolve_proc(const std::string& dll, const std::string& name) const;
 
     // TIB / SEH. tib_addr() is the guest linear address of the Thread
     // Information Block; fs_base points here, so fs:[0] is the SEH chain head.
