@@ -1,0 +1,7 @@
+# Cross-origin isolation ONLY for the Rome: Total War play page. Its OPFS asset
+# bridge (Fortochka fs-worker) uses SharedArrayBuffer + Atomics, which the browser
+# gates behind COOP/COEP. Scoped to /play/rtw/* so the rest of the site — and the
+# cafe OAuth popups, which COOP:same-origin would break — stay unaffected.
+/play/rtw/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp

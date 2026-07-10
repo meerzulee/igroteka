@@ -51,3 +51,11 @@ build-web/
 
 # Wrangler local state (D1 cache, dev server tmp) — root and cafe/
 .wrangler/
+
+# RTW play page: engine + workers are build-staged from fortochka/runtime/web
+# (source there) + the wasm build. Only index.html is hand-authored/tracked.
+site/play/rtw/worker.js
+site/play/rtw/fsworker.js
+site/play/rtw/fsproto.js
+site/play/rtw/import.html
+site/play/rtw/zhweb.js

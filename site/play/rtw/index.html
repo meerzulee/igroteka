@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Rome: Total War — Igroteka</title>
+  <link rel="stylesheet" href="../../xp.css">
+  <style>
+    html, body { margin:0; background:#000; color:#cfd2dd; overflow:hidden;
+                 font: 13px/1.5 "Segoe UI", Roboto, sans-serif; }
+    #stage { display:flex; justify-content:center; align-items:center;
+             min-height:100vh; padding:14px; box-sizing:border-box; }
+    canvas { background:#000; image-rendering:auto; }
+    #fsbtn { position:fixed; right:10px; bottom:10px; z-index:4; width:34px; height:34px;
+      background:rgba(40,26,14,.55); border:1px solid rgba(200,150,70,.4); border-radius:4px;
+      color:#e8d4b0; font-size:18px; line-height:32px; text-align:center; cursor:pointer;
+      opacity:.35; transition:opacity .2s; user-select:none; }
+    #fsbtn:hover { opacity:1; }
+    /* Rome loading screen — no game assets, our own art */
+    #loader { position:fixed; inset:0; z-index:5; overflow:hidden; opacity:1;
+              transition: opacity .6s; color:#e6d5b8;
+      background:
+        radial-gradient(ellipse 80% 55% at 50% 32%, rgba(120,40,20,.4), transparent 70%),
+        repeating-linear-gradient(0deg, transparent 0 40px, rgba(150,90,40,.05) 40px 41px),
+        linear-gradient(#120806, #1c0f08 55%, #0a0503); }
+    #loader.hidden { opacity:0; pointer-events:none; }
+    #loader .frame { position:absolute; inset:26px; border:1px solid rgba(180,120,60,.35);
+      box-shadow: inset 0 0 60px rgba(120,50,20,.4); }
+    #loader .corner { position:absolute; width:22px; height:22px;
+      border:2px solid rgba(220,160,80,.8); }
+    #loader .corner.tl { top:-1px; left:-1px; border-right:0; border-bottom:0; }
+    #loader .corner.tr { top:-1px; right:-1px; border-left:0; border-bottom:0; }
+    #loader .corner.bl { bottom:-1px; left:-1px; border-right:0; border-top:0; }
+    #loader .corner.br { bottom:-1px; right:-1px; border-left:0; border-top:0; }
+    #loader .center { position:absolute; inset:0; display:flex; flex-direction:column;
+      align-items:center; justify-content:center; gap:20px; text-align:center; }
+    #wm { font-weight:800; letter-spacing:2px; line-height:1; }
+    #wm .a { font-size:18px; color:#c79a5c; letter-spacing:8px; }
+    #wm .b { font-size:52px; margin-top:6px;
+      background:linear-gradient(#f6e6c8, #d8a860 55%, #a8702f);
+      -webkit-background-clip:text; background-clip:text; color:transparent;
+      text-shadow:0 2px 10px rgba(180,90,40,.5); }
+    #wm .c { font-size:15px; color:#b0563a; letter-spacing:12px; margin-top:6px; }
+    #bwrap { width:460px; max-width:70vw; }
+    #track { height:16px; border:1px solid rgba(200,150,80,.55); padding:2px;
+      background:rgba(30,15,8,.6); border-radius:2px; overflow:hidden; }
+    #fill { height:100%; width:0; border-radius:1px;
+      background:repeating-linear-gradient(90deg,#c98b3b 0 10px, transparent 10px 14px),
+                 linear-gradient(#e0a850,#b0702f);
+      box-shadow:0 0 10px rgba(220,150,70,.6); transition:width .3s; }
+    #msg { margin-top:10px; font-size:12px; color:#c79a5c; min-height:16px;
+      letter-spacing:1px; text-transform:uppercase; }
+    #sub { margin-top:4px; font-size:11px; color:#7a6448; min-height:14px;
+      font-variant-numeric:tabular-nums; }
+    #tip { position:absolute; bottom:52px; left:0; right:0; text-align:center;
+      color:#a58a63; font-size:13px; font-style:italic; padding:0 40px; }
+    #tip b { color:#d8a860; font-style:normal; letter-spacing:1px; }
+    /* XP crash / setup dialog over the canvas */
+    #crash { display:none; position:fixed; inset:0; z-index:10;
+             align-items:center; justify-content:center; background:rgba(0,0,0,.35); }
+    #crash .window { width:440px; box-shadow:4px 4px 16px rgba(0,0,0,.55); }
+    #crash .body { display:flex; gap:14px; padding:16px 14px;
+             align-items:flex-start; background:#fff; font-size:12px;
+             line-height:1.5; color:#000; }
+    #crash .btns { display:flex; justify-content:center; gap:8px; padding:10px; }
+    a { color:#e8b34b; }
+  </style>
+</head>
+<body>
+  <div id="loader">
+    <div class="frame">
+      <span class="corner tl"></span><span class="corner tr"></span>
+      <span class="corner bl"></span><span class="corner br"></span>
+    </div>
+    <div class="center">
+      <div id="wm">
+        <div class="a">TOTAL WAR</div>
+        <div class="b">ROME</div>
+        <div class="c">IGROTEKA</div>
+      </div>
+      <div id="bwrap">
+        <div id="track"><div id="fill"></div></div>
+        <div id="msg">Checking your game files…</div>
+        <div id="sub"></div>
+      </div>
+    </div>
+    <div id="tip"></div>
+  </div>
+  <div id="stage">
+    <canvas id="canvas" width="1024" height="768" oncontextmenu="event.preventDefault()"></canvas>
+  </div>
+  <div id="fsbtn" title="Fullscreen">⛶</div>
+  <div id="crash">
+    <div class="window">
+      <div class="title-bar">
+        <div class="title-bar-text">Rome: Total War</div>
+        <div class="title-bar-controls"><button aria-label="Close" id="crashX"></button></div>
+      </div>
+      <div class="body">
+        <svg width="32" height="32" viewBox="0 0 32 32" style="flex:0 0 32px" aria-hidden="true">
+          <circle cx="16" cy="16" r="15" fill="#d83a2e"/>
+          <path d="M10 10 L22 22 M22 10 L10 22" stroke="#fff" stroke-width="4" stroke-linecap="round"/>
+        </svg>
+        <div id="crashMsg"></div>
+      </div>
+      <div class="btns" id="crashBtns"></div>
+    </div>
+  </div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d', { alpha: false });
+const loader = document.getElementById('loader');
+const msg = document.getElementById('msg');
+const sub = document.getElementById('sub');
+const fill = document.getElementById('fill');
+const tipEl = document.getElementById('tip');
+let img = null, revealed = false, t0 = performance.now();
+
+// ---- fullscreen ----
+const fsbtn = document.getElementById('fsbtn');
+const fsAvailable = !!(document.fullscreenEnabled || document.webkitFullscreenEnabled);
+if (!fsAvailable) fsbtn.style.display = 'none';
+else fsbtn.addEventListener('click', () => {
+  const inFs = document.fullscreenElement || document.webkitFullscreenElement;
+  if (inFs) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  else { const el = document.documentElement;
+    (el.requestFullscreen || el.webkitRequestFullscreen).call(el, { navigationUI: 'hide' }); }
+});
+
+// ---- fit canvas to window at the game aspect ----
+function fitCanvas() {
+  const availW = innerWidth - 28, availH = innerHeight - 28;
+  const ratio = (canvas.width || 4) / (canvas.height || 3);
+  let w = availW, h = w / ratio;
+  if (h > availH) { h = availH; w = h * ratio; }
+  canvas.style.width = Math.round(w) + 'px';
+  canvas.style.height = Math.round(h) + 'px';
+}
+fitCanvas();
+addEventListener('resize', fitCanvas);
+
+// ---- crash / setup dialog ----
+function showDialog(html, opts = {}) {
+  document.getElementById('crashMsg').innerHTML = html;
+  const btns = document.getElementById('crashBtns');
+  btns.innerHTML = '';
+  const add = (label, fn) => { const b = document.createElement('button');
+    b.textContent = label; b.onclick = fn; btns.appendChild(b); };
+  if (opts.setup) add('Install game files', () => location.href = 'import.html');
+  if (opts.reload) add('Reload', () => location.reload());
+  add('Close', () => location.href = '../../');
+  document.getElementById('crashX').onclick = () => location.href = '../../';
+  document.getElementById('crash').style.display = 'flex';
+}
+
+// ---- tips ----
+const TIPS = [
+  'Hold the line — spearmen counter cavalry, cavalry ride down archers, archers whittle spearmen.',
+  'High ground and fatigue decide close battles. Charge downhill, keep your men rested.',
+  'Bribe or besiege — not every city needs to be stormed.',
+  'Flaming ammunition shakes enemy morale but hits less accurately.',
+  'Your game files never leave this device. Igroteka hosts nothing.',
+  'The interpreter is slow — the menu takes a couple of minutes to load. Watch the bar.',
+];
+let tipTimer = null, ti = Math.floor(Date.now()/1000) % TIPS.length;
+function startTips() {
+  const show = () => { tipEl.innerHTML = '<b>TIP</b> &nbsp; ' + TIPS[ti++ % TIPS.length]; };
+  show(); tipTimer = setInterval(show, 6000);
+}
+startTips();
+
+function hideLoader() {
+  if (revealed) return; revealed = true;
+  if (tipTimer) clearInterval(tipTimer);
+  loader.classList.add('hidden');
+  setTimeout(() => { loader.style.display = 'none'; }, 700);
+}
+
+// ---- worker ----
+let worker;
+try { worker = new Worker('worker.js'); }
+catch (e) { showDialog('Rome: Total War could not start a worker.<br><br><span style="color:#555">' + e + '</span>', { reload: true }); }
+
+if (worker) {
+  worker.onerror = (e) => showDialog(
+    'Rome: Total War has encountered a problem and needs to close.<br><br><span style="color:#555">' +
+    (e.message || e) + '</span>', { reload: true });
+  worker.onmessage = (e) => {
+    const m = e.data;
+    switch (m.type) {
+      case 'ready':
+        msg.textContent = 'Booting the engine…';
+        break;
+      case 'needimport':
+        showDialog(
+          'Rome: Total War could not start because your game files were not found ' +
+          'on this device.<br><br>Install your <b>Rome: Total War</b> folder (the one ' +
+          'with <b>RomeTW.exe</b>) to play. Your files never leave this device.',
+          { setup: true });
+        break;
+      case 'frame': {
+        if (canvas.width !== m.w || canvas.height !== m.h) {
+          canvas.width = m.w; canvas.height = m.h; img = null; fitCanvas();
+        }
+        if (!img || img.width !== m.w) img = ctx.createImageData(m.w, m.h);
+        const src = new Uint32Array(m.buf);
+        const dst = new Uint32Array(img.data.buffer);
+        for (let i = 0; i < src.length; i++) {
+          const p = src[i];                       // ARGB 0xAARRGGBB
+          dst[i] = 0xFF000000 | ((p & 0xFF) << 16) | (p & 0xFF00) | ((p >> 16) & 0xFF);
+        }
+        ctx.putImageData(img, 0, 0);
+        hideLoader();
+        sub.textContent = (m.icount / 1e9).toFixed(2) + 'B instructions';
+        break;
+      }
+      case 'progress': {
+        const secs = ((performance.now() - t0) / 1000).toFixed(0);
+        sub.textContent = (m.icount / 1e9).toFixed(2) + 'B instructions · ' + secs + 's';
+        // crude progress feel: asymptotic bar toward 95% over the load
+        const pct = Math.min(95, (m.icount / 14e9) * 100);
+        fill.style.width = pct + '%';
+        break;
+      }
+      case 'log':
+        if (/loading|load data|load RomeTW/i.test(m.line)) {
+          const f = m.line.replace(/^.*load\s+/i, '').split('(')[0].trim();
+          if (f) msg.textContent = 'Loading ' + f.slice(0, 48) + '…';
+        }
+        break;
+      case 'done':
+        if (m.code === 0) location.href = '../../';        // clean exit -> desktop
+        else showDialog('Rome: Total War exited (code ' + m.code + ').', { reload: true });
+        break;
+      case 'error':
+        showDialog(
+          'Rome: Total War has encountered a problem and needs to close.<br><br>' +
+          '<span style="color:#555">' + m.msg + '</span>', { reload: true });
+        break;
+    }
+  };
+}
+</script>
+</body>
+</html>
