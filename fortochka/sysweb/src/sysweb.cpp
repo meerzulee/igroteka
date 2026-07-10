@@ -3,6 +3,7 @@
 #include "sysweb/sysweb.h"
 
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 namespace sysweb {
@@ -283,10 +284,41 @@ int decorated_nargs(const std::string& name) {
 
 bool mss32(Machine& m, const std::string& name) {
     if (name.rfind("_AIL_", 0) != 0) return false;
+    // _AIL_enumerate_3D_providers(HPROENUM* next, HPROVIDER* dest, C8** name):
+    // RTW treats 3D-audio-init failure as FATAL (main returns after "Failed to
+    // initialise 3D audio!"). It enumerates 3D providers, then requires the one
+    // named "Miles Fast 2D Positional Audio" (the Miles software positional
+    // provider, present on every real install). Yield exactly that one provider
+    // so the init finds and selects it. The iterator convention: *next starts at
+    // AIL_3D_PROVIDER_START (0), each nonzero return fills *dest/*name and
+    // advances *next; a 0 return ends enumeration.
+    if (name == "_AIL_enumerate_3D_providers@12") {
+        static uint32_t name_va = 0;
+        if (!name_va) {
+            const char* pn = "Miles Fast 2D Positional Audio";
+            uint32_t n = (uint32_t)std::strlen(pn) + 1;
+            name_va = m.alloc(n);
+            std::memcpy(m.mem() + name_va, pn, n);
+        }
+        uint32_t next_p = m.arg(0), dest_p = m.arg(1), name_p = m.arg(2);
+        if (m.read32(next_p) == 0) {
+            m.write32(dest_p, 0x0A1D3D01u); // fake HPROVIDER
+            m.write32(name_p, name_va);     // provider name string
+            m.write32(next_p, 1);           // advance cursor
+            m.ret(3, 1);                    // one provider available
+        } else {
+            m.ret(3, 0);                    // enumeration complete
+        }
+        return true;
+    }
+    // Handle-returning opens (nonzero = valid handle). NOTE: _AIL_open_3D_provider
+    // is NOT here — it returns an M3DRESULT status where 0 == M3D_NOERR (success),
+    // so it falls through to the default 0 return. Returning a fake "handle" there
+    // reads as an error code and makes RTW abort 3D-audio init (fatal).
     static const char* kHandles[] = {
         "_AIL_allocate_sample_handle@4", "_AIL_init_3D_sample_handle@12",
         "_AIL_init_sample@4", "_AIL_init_stream@16", "_AIL_open_3D_listener@4",
-        "_AIL_open_3D_provider@4", "_AIL_open_digital_driver@16",
+        "_AIL_open_digital_driver@16",
         "_AIL_open_filter@8", "_AIL_startup@0"};
     static const char* kStatus[] = {
         "_AIL_3D_sample_status@4", "_AIL_sample_status@4", "_AIL_stream_status@4"};
