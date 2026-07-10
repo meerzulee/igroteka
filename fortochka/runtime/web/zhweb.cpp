@@ -27,7 +27,10 @@ using runtime::Machine;
 // apparent encoding (the text path mis-decodes UTF-16/BOM files, halving them).
 // Returns 1 + malloc'd bytes on HTTP 200, 0 (len=-1) on a miss.
 extern "C" EM_JS(int, zhweb_host_fetch, (const char* url, unsigned char** out, int* len), {
-  var path = UTF8ToString(url);
+  // Read the C string byte-by-byte (paths are ASCII). Avoids UTF8ToString ->
+  // TextDecoder.decode, which throws on ALLOW_MEMORY_GROWTH's resizable buffer.
+  var path = '';
+  for (var k = url; HEAPU8[k] !== 0; k++) path += String.fromCharCode(HEAPU8[k]);
   try {
     var xhr = new XMLHttpRequest();
     xhr.open('GET', path, false); // synchronous — Web Worker only
@@ -105,7 +108,8 @@ int zhweb_boot(const uint8_t* exe, int len, const char* url_base, int slice_m) {
     g_exit = -3;
     // RTW loads its whole menu 3D-background scene (building models, unit db,
     // animations) onto a never-freed bump heap, so it needs a big arena. 1.5GB
-    // leaves ~1.45GB of guest heap above the image.
+    // leaves ~1.45GB of guest heap above the image; memory grows to fit it plus
+    // the ~724MB asset VFS.
     g_m = std::make_unique<Machine>(1536u << 20);
     try {
         g_m->load(exe, (size_t)len);
