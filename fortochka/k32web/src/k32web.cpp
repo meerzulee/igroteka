@@ -10,6 +10,13 @@
 #include <dirent.h>   // host-mount directory enumeration (native boot only)
 #include <sys/stat.h>
 
+// Browser file fetch, provided by runtime/web/zhweb.cpp (Emscripten build only):
+// synchronous XHR pulling a game asset over HTTP. File-scope C linkage so
+// host_load (in the anonymous namespace below) can call it.
+#ifdef __EMSCRIPTEN__
+extern "C" int zhweb_host_fetch(const char* url, unsigned char** out, int* len);
+#endif
+
 namespace k32web {
 
 using runtime::Machine;
@@ -194,9 +201,22 @@ std::string host_path_for(const std::string& norm) {
 int host_load(const std::string& norm) {
     std::string hp = host_path_for(norm);
     if (hp.empty()) return -1;
+    if (g_k.vfs.size() >= MAX_FILES) return -1;
+#ifdef __EMSCRIPTEN__
+    // Browser: the "host root" is a URL base; fetch the file over HTTP (a
+    // synchronous XHR in the Web Worker). zhweb.cpp provides the fetch (declared
+    // at file scope); it returns malloc'd bytes (caller frees) or len<0 on a miss.
+    unsigned char* buf = nullptr;
+    int len = -1;
+    if (zhweb_host_fetch(hp.c_str(), &buf, &len) == 0 || len < 0) return -1;
+    g_k.vfs.push_back({norm, {}});
+    int idx = (int)g_k.vfs.size() - 1;
+    if (len > 0 && buf) g_k.vfs[idx].data.assign(buf, buf + len);
+    std::free(buf);
+    return idx;
+#else
     struct stat st;
     if (stat(hp.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return -1;
-    if (g_k.vfs.size() >= MAX_FILES) return -1;
     FILE* f = std::fopen(hp.c_str(), "rb");
     if (!f) return -1;
     g_k.vfs.push_back({norm, {}});
@@ -211,6 +231,7 @@ int host_load(const std::string& norm) {
     std::fprintf(stderr, "vfs: host-load %s (%zu bytes)\n", norm.c_str(),
                  data.size());
     return idx;
+#endif
 }
 // vfs_find, then a host-mount fallback (open / attribute / read paths).
 int vfs_find_host(const std::string& name) {

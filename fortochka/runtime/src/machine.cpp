@@ -214,6 +214,13 @@ int Machine::run_entry(uint64_t step_budget) {
     return scheduler_run(kThreadSliceSteps, step_budget);
 }
 
+int Machine::run_more(uint64_t delta_steps) {
+    if (exited) return (int)exit_code;
+    // Resume: scheduler_run re-parks the current thread (a no-op, its state was
+    // saved on the budget return) and continues from where it stopped.
+    return scheduler_run(kThreadSliceSteps, proc_icount_ + delta_steps);
+}
+
 uint32_t Machine::call_guest(uint32_t func_va, const std::vector<uint32_t>& args,
                              uint64_t step_budget) {
     // Each reverse thunk is one host C++ frame; a guest that re-enters without

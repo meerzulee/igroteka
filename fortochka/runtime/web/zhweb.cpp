@@ -1,10 +1,17 @@
-// zhweb — Emscripten entry point. Same Machine + HLE pipeline as zhrun, exposed
-// as one C function the page calls with an uploaded PE's bytes. Emscripten
-// routes stdout to a JS callback, so guest console output lands in the browser.
+// zhweb — Emscripten entry point. Two modes:
+//   - zhweb_run(): the original one-shot demo runner (upload a small PE, run it
+//     to completion, grab the frame).
+//   - zhweb_boot()/zhweb_slice(): RTW mode. A persistent Machine boots RomeTW.exe
+//     and runs in slices so the Web Worker can blit a frame + pump input between
+//     them (RTW's main loop never returns). Game assets are pulled lazily over
+//     HTTP via a synchronous XHR (zhweb_host_fetch, called from k32web::host_load
+//     — Workers allow sync XHR).
 #include <emscripten/emscripten.h>
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <memory>
 #include <vector>
 
 #include "d9web/d9web.h"
@@ -15,15 +22,40 @@
 
 using runtime::Machine;
 
+// Synchronous binary fetch. Sync XHR can't use responseType, so read the body as
+// a "text/plain; charset=x-user-defined" string (each char = one raw byte) and
+// copy it out. Returns 1 + malloc'd bytes on HTTP 200, 0 (len=-1) on a miss.
+extern "C" EM_JS(int, zhweb_host_fetch, (const char* url, unsigned char** out, int* len), {
+  var path = UTF8ToString(url);
+  try {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', path, false); // synchronous — Web Worker only
+    xhr.overrideMimeType('text/plain; charset=x-user-defined');
+    xhr.send();
+    if (xhr.status !== 200 && xhr.status !== 0) { setValue(len, -1, 'i32'); return 0; }
+    var s = xhr.responseText;
+    var n = s.length;
+    var p = _malloc(n || 1);
+    for (var i = 0; i < n; i++) HEAPU8[p + i] = s.charCodeAt(i) & 0xff;
+    setValue(out, p, 'i32');
+    setValue(len, n, 'i32');
+    return 1;
+  } catch (e) {
+    setValue(len, -1, 'i32');
+    return 0;
+  }
+});
+
 namespace {
+std::unique_ptr<Machine> g_m;
 uint32_t g_fb_w = 0, g_fb_h = 0;
 const uint32_t* g_fb = nullptr;
+int g_exit = -3; // -3 = still running
 } // namespace
 
 extern "C" {
 
-// Run a PE32 image. Returns the process exit code, or a negative error:
-//   -1 peload failure   -2 machine error (fault/unimplemented import/runaway)
+// One-shot demo runner (unchanged behaviour).
 EMSCRIPTEN_KEEPALIVE
 int zhweb_run(const uint8_t* file, int len, int arena_mb) {
     if (arena_mb <= 0) arena_mb = 64;
@@ -38,33 +70,80 @@ int zhweb_run(const uint8_t* file, int len, int arena_mb) {
         printf("peload: %s\n", e.what());
         return -1;
     }
-
     k32web::install(m);
     u32web::install(m);
     d9web::install(m);
     sysweb::install(m);
-    // Seed one WM_PAINT so a windowed exe paints once; a console exe never pumps
-    // and leaves it unconsumed.
     u32web::post_message(0x00010001, 0x000F /*WM_PAINT*/, 0, 0);
-
     int code;
     try {
         code = m.run_entry();
-        printf("zhweb: exit=%d icount=%llu\n", code,
-               (unsigned long long)m.cpu().icount);
     } catch (const runtime::MachineError& e) {
         printf("zhweb: %s\n", e.what.c_str());
         code = -2;
     }
-    // Prefer a presented D3D frame; fall back to the GDI paint framebuffer.
     g_fb = d9web::framebuffer(g_fb_w, g_fb_h);
     if (!g_fb) g_fb = u32web::framebuffer(g_fb_w, g_fb_h);
     return code;
 }
 
-// Framebuffer accessors for the page's canvas blit (ARGB 0xFFRRGGBB, row-major).
+// RTW mode: boot RomeTW.exe (its bytes are uploaded into WASM memory) and mount
+// the asset directory at `url_base` (fetched lazily over HTTP). Runs the first
+// slice of `slice_m` million instructions. Returns 0 (booting) or -1 on load
+// failure.
+EMSCRIPTEN_KEEPALIVE
+int zhweb_boot(const uint8_t* exe, int len, const char* url_base, int slice_m) {
+    g_fb = nullptr;
+    g_fb_w = g_fb_h = 0;
+    g_exit = -3;
+    g_m = std::make_unique<Machine>(512u << 20); // 512MB arena for RTW
+    try {
+        g_m->load(exe, (size_t)len);
+    } catch (const peload::LoadError& e) {
+        printf("peload: %s\n", e.what());
+        g_m.reset();
+        return -1;
+    }
+    k32web::install(*g_m);
+    u32web::install(*g_m);
+    d9web::install(*g_m);
+    sysweb::install(*g_m);
+    k32web::mount_host_dir("c:/rtw", url_base ? url_base : "");
+    if (slice_m <= 0) slice_m = 100;
+    try {
+        g_exit = g_m->run_entry((uint64_t)slice_m * 1000000ull);
+    } catch (const runtime::MachineError& e) {
+        printf("zhweb: %s\n", e.what.c_str());
+        g_exit = -2;
+    }
+    return 0;
+}
+
+// Run one more slice. Returns -3 (still running), >=0 (exit code), -2 (fault).
+EMSCRIPTEN_KEEPALIVE
+int zhweb_slice(int slice_m) {
+    if (!g_m || g_exit != -3) return g_exit;
+    if (slice_m <= 0) slice_m = 100;
+    try {
+        g_exit = g_m->run_more((uint64_t)slice_m * 1000000ull);
+    } catch (const runtime::MachineError& e) {
+        printf("zhweb: %s\n", e.what.c_str());
+        g_exit = -2;
+    }
+    return g_exit;
+}
+
+// Latest presented D3D frame (GDI fallback). Call zhweb_fb_ptr first — it
+// refreshes the cached width/height.
+EMSCRIPTEN_KEEPALIVE const uint32_t* zhweb_fb_ptr() {
+    g_fb = d9web::framebuffer(g_fb_w, g_fb_h);
+    if (!g_fb) g_fb = u32web::framebuffer(g_fb_w, g_fb_h);
+    return g_fb;
+}
 EMSCRIPTEN_KEEPALIVE int zhweb_fb_width() { return (int)g_fb_w; }
 EMSCRIPTEN_KEEPALIVE int zhweb_fb_height() { return (int)g_fb_h; }
-EMSCRIPTEN_KEEPALIVE const uint32_t* zhweb_fb_ptr() { return g_fb; }
+EMSCRIPTEN_KEEPALIVE double zhweb_icount() {
+    return g_m ? (double)g_m->proc_ticks() : 0.0;
+}
 
 } // extern "C"

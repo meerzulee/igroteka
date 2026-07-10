@@ -45,6 +45,11 @@ class Machine {
     // callbacks, then the entry point. Returns the process exit code.
     // Throws MachineError on fault / unimplemented import / runaway.
     int run_entry(uint64_t step_budget = 200'000'000);
+    // Resume a process that returned early because run_entry/run_more hit its
+    // step budget (scheduler + thread state persist in the Machine). Runs up to
+    // `delta_steps` more retired instructions, then returns so a host loop (the
+    // browser slice loop) can blit a frame / pump input and call again.
+    int run_more(uint64_t delta_steps);
 
     // Reverse thunk: call a guest function at `func_va` with `args` pushed
     // right-to-left (stdcall/cdecl compatible), on the current stack. Runs
