@@ -1,0 +1,305 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Rome: Total War — OPFS import</title>
+<style>
+  body { margin: 0; background: #0d0d0d; color: #ccc; font: 13px/1.5 ui-monospace, monospace; }
+  header { padding: 8px 14px; background: #1a1a1a; border-bottom: 1px solid #333; }
+  header b { color: #6cf; }
+  .warn { color: #d94; }
+  #main { max-width: 900px; margin: 0 auto; padding: 16px 14px; }
+  #controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  button { font: inherit; cursor: pointer; background: #161616; color: #ccc; border: 1px solid #333; padding: 6px 12px; }
+  button:hover:not(:disabled) { background: #222; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  #pick { font-size: 16px; padding: 12px 24px; color: #6cf; border-color: #6cf; background: #10161a; }
+  #pick:hover:not(:disabled) { background: #16222a; }
+  #clear { color: #d94; }
+  #status { padding: 6px 10px; background: #161616; border: 1px solid #333; color: #9c9; margin-bottom: 8px; white-space: pre-wrap; min-height: 20px; }
+  #status.ok { color: #8c8; }
+  #status.err { color: #f66; }
+  #barWrap { height: 10px; background: #161616; border: 1px solid #333; margin-bottom: 6px; }
+  #bar { height: 100%; width: 0%; background: #6cf; }
+  #current { color: #777; font-size: 11px; margin-bottom: 10px; min-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #log { height: 420px; overflow-y: auto; background: #000; border: 1px solid #333; padding: 8px; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+  #log .e { color: #f66; }
+  #log .g { color: #8c8; }
+  #log .i { color: #79c; }
+</style>
+<header>
+  <b>RomeTW asset import</b> — copies your game-data folder into OPFS so the runtime worker can read it synchronously.
+  <span class="warn">Runs once; ~42k files / 1–2 GB, give it a few minutes.</span>
+</header>
+<div id="main">
+  <div id="controls">
+    <button id="pick">Choose RomeTW folder</button>
+    <button id="check">Check OPFS status</button>
+    <button id="clear">Clear OPFS</button>
+  </div>
+  <div id="status">idle — pick the folder that contains RomeTW.exe and data/</div>
+  <div id="barWrap"><div id="bar"></div></div>
+  <div id="current"></div>
+  <div id="log"></div>
+</div>
+<script>
+'use strict';
+
+const OPFS_ROOT_NAME = 'rtw';
+const MARKER_NAME = '.import-complete';
+
+const pickBtn = document.getElementById('pick');
+const checkBtn = document.getElementById('check');
+const clearBtn = document.getElementById('clear');
+const statusEl = document.getElementById('status');
+const barEl = document.getElementById('bar');
+const currentEl = document.getElementById('current');
+const logEl = document.getElementById('log');
+let logLines = 0;
+
+function log(msg, cls) {
+  const el = document.createElement('div');
+  if (cls) el.className = cls;
+  el.textContent = msg;
+  logEl.appendChild(el);
+  if (++logLines > 500) logEl.removeChild(logEl.firstChild); // cap
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function fmtBytes(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + ' GB';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + ' MB';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + ' KB';
+  return n + ' B';
+}
+
+function setStatus(text, cls) {
+  statusEl.textContent = text;
+  statusEl.className = cls || '';
+}
+
+function setBusy(busy) {
+  pickBtn.disabled = checkBtn.disabled = clearBtn.disabled = busy;
+}
+
+// ---- feature guard ------------------------------------------------------
+
+const supported = !!(window.showDirectoryPicker && navigator.storage && navigator.storage.getDirectory);
+if (!supported) {
+  setStatus('unsupported browser', 'err');
+  log('This browser lacks the File System Access API and/or OPFS.', 'e');
+  log('Use desktop Chrome or Edge — showDirectoryPicker() and navigator.storage.getDirectory() are required.', 'e');
+  setBusy(true);
+}
+
+// ---- progress state (throttled rendering) -------------------------------
+
+const state = { phase: 'idle', seen: 0, total: 0, copied: 0, failed: 0, bytes: 0, current: '' };
+let lastRender = 0;
+
+function render(force) {
+  const now = performance.now();
+  if (!force && now - lastRender < 200) return;
+  lastRender = now;
+  if (state.phase === 'scanning') {
+    setStatus('scanning source folder… ' + state.seen + ' files found');
+    barEl.style.width = '0%';
+  } else if (state.phase === 'copying') {
+    const done = state.copied + state.failed;
+    const pct = state.total ? (done / state.total) * 100 : 0;
+    setStatus('copying ' + state.copied + ' / ' + state.total + ' files · ' + fmtBytes(state.bytes) +
+              (state.failed ? ' · ' + state.failed + ' FAILED' : ''));
+    barEl.style.width = pct.toFixed(2) + '%';
+    currentEl.textContent = state.current;
+  }
+}
+
+// ---- source walk: count pass --------------------------------------------
+
+async function countDir(dirHandle) {
+  for await (const [, handle] of dirHandle.entries()) {
+    if (handle.kind === 'directory') {
+      await countDir(handle);
+    } else {
+      state.seen++;
+      render();
+    }
+  }
+}
+
+// ---- source walk: copy pass ---------------------------------------------
+
+let nextMilestone = 1000;
+
+async function copyDir(srcDir, dstDir, relPath, depth) {
+  for await (const [name, handle] of srcDir.entries()) {
+    const path = relPath ? relPath + '/' + name : name; // exact case preserved
+    if (handle.kind === 'directory') {
+      if (depth === 0) log('entering ' + path + '/', 'i');
+      let dstSub;
+      try {
+        dstSub = await dstDir.getDirectoryHandle(name, { create: true });
+      } catch (e) {
+        state.failed++;
+        log('FAIL mkdir ' + path + ': ' + (e.message || e), 'e');
+        continue; // skip whole subtree we cannot create
+      }
+      await copyDir(handle, dstSub, path, depth + 1);
+    } else {
+      state.current = path;
+      try {
+        const file = await handle.getFile();
+        const dstFile = await dstDir.getFileHandle(name, { create: true });
+        const writable = await dstFile.createWritable();
+        await writable.write(file);
+        await writable.close();
+        state.copied++;
+        state.bytes += file.size;
+        if (state.copied >= nextMilestone) {
+          log(state.copied + ' files copied · ' + fmtBytes(state.bytes), 'g');
+          nextMilestone += 1000;
+        }
+      } catch (e) {
+        state.failed++;
+        log('FAIL ' + path + ': ' + (e.message || e), 'e');
+      }
+      render();
+    }
+  }
+}
+
+// ---- import -------------------------------------------------------------
+
+pickBtn.onclick = async () => {
+  let srcRoot;
+  try {
+    // must be called directly from the user gesture, on the main thread
+    srcRoot = await window.showDirectoryPicker({ mode: 'read' });
+  } catch (e) {
+    if (e && e.name === 'AbortError') { log('folder pick cancelled', 'i'); return; }
+    log('folder picker failed: ' + (e && e.message || e), 'e');
+    return;
+  }
+
+  setBusy(true);
+  state.phase = 'scanning';
+  state.seen = state.total = state.copied = state.failed = state.bytes = 0;
+  state.current = '';
+  nextMilestone = 1000;
+  barEl.style.width = '0%';
+  currentEl.textContent = '';
+
+  try {
+    log('picked "' + srcRoot.name + '" — counting files…', 'i');
+    if (navigator.storage.persist) {
+      const persisted = await navigator.storage.persist();
+      log('persistent storage: ' + (persisted ? 'granted' : 'not granted (best-effort eviction rules apply)'),
+          persisted ? 'g' : null);
+    }
+
+    await countDir(srcRoot);
+    state.total = state.seen;
+    render(true);
+    log('scan complete: ' + state.total + ' files', 'i');
+
+    const opfsRoot = await navigator.storage.getDirectory();
+    const dstRoot = await opfsRoot.getDirectoryHandle(OPFS_ROOT_NAME, { create: true });
+
+    state.phase = 'copying';
+    const t0 = performance.now();
+    await copyDir(srcRoot, dstRoot, '', 0);
+
+    // completion marker — the read side checks rtw/.import-complete
+    const meta = { files: state.copied, bytes: state.bytes, importedAtMs: Date.now() };
+    const markerHandle = await dstRoot.getFileHandle(MARKER_NAME, { create: true });
+    const writable = await markerHandle.createWritable();
+    await writable.write(JSON.stringify(meta));
+    await writable.close();
+
+    state.phase = 'done';
+    barEl.style.width = '100%';
+    currentEl.textContent = '';
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    if (state.failed === 0) {
+      setStatus('Import complete: ' + state.copied + ' files, ' + fmtBytes(state.bytes) +
+                '. You can now open rtw.html', 'ok');
+      log('import complete in ' + secs + 's — ' + state.copied + ' files, ' + fmtBytes(state.bytes), 'g');
+    } else {
+      setStatus('Import finished with ' + state.failed + ' failures: ' + state.copied + ' files copied, ' +
+                fmtBytes(state.bytes) + '. Check the log.', 'err');
+      log('import finished in ' + secs + 's — ' + state.copied + ' copied, ' + state.failed +
+          ' FAILED (see errors above)', 'e');
+    }
+  } catch (e) {
+    state.phase = 'error';
+    setStatus('import failed: ' + (e && e.message || e), 'err');
+    log('FATAL: ' + (e && e.stack || e), 'e');
+  } finally {
+    setBusy(false);
+  }
+};
+
+// ---- status check -------------------------------------------------------
+
+checkBtn.onclick = async () => {
+  setBusy(true);
+  try {
+    const opfsRoot = await navigator.storage.getDirectory();
+
+    let dir;
+    try {
+      dir = await opfsRoot.getDirectoryHandle(OPFS_ROOT_NAME);
+    } catch (e) {
+      setStatus('OPFS: no "' + OPFS_ROOT_NAME + '" directory — nothing imported yet');
+      log('OPFS status: "' + OPFS_ROOT_NAME + '" not found, run the import', 'i');
+      return;
+    }
+
+    let markerHandle;
+    try {
+      markerHandle = await dir.getFileHandle(MARKER_NAME);
+    } catch (e) {
+      setStatus('OPFS: "' + OPFS_ROOT_NAME + '" exists but no completion marker — previous import incomplete', 'err');
+      log('OPFS status: partial import detected (no ' + MARKER_NAME + '). Clear OPFS and re-import.', 'e');
+      return;
+    }
+
+    const meta = JSON.parse(await (await markerHandle.getFile()).text());
+    const when = new Date(meta.importedAtMs).toLocaleString();
+    setStatus('Already imported: ' + meta.files + ' files, ' + fmtBytes(meta.bytes) + ' (' + when + ')', 'ok');
+    log('OPFS status: import complete — ' + meta.files + ' files, ' + fmtBytes(meta.bytes) + ', imported ' + when, 'g');
+
+    if (navigator.storage.estimate) {
+      const est = await navigator.storage.estimate();
+      log('storage estimate: ' + fmtBytes(est.usage || 0) + ' used of ' + fmtBytes(est.quota || 0) + ' quota', 'i');
+    }
+  } catch (e) {
+    setStatus('status check failed: ' + (e && e.message || e), 'err');
+    log('status check failed: ' + (e && e.message || e), 'e');
+  } finally {
+    setBusy(false);
+  }
+};
+
+// ---- clear --------------------------------------------------------------
+
+clearBtn.onclick = async () => {
+  if (!confirm('Delete the entire "' + OPFS_ROOT_NAME + '" tree from OPFS? You will have to re-import.')) return;
+  setBusy(true);
+  setStatus('clearing OPFS…');
+  try {
+    const opfsRoot = await navigator.storage.getDirectory();
+    await opfsRoot.removeEntry(OPFS_ROOT_NAME, { recursive: true });
+    setStatus('OPFS cleared — "' + OPFS_ROOT_NAME + '" removed');
+    log('OPFS "' + OPFS_ROOT_NAME + '" removed', 'g');
+  } catch (e) {
+    if (e && e.name === 'NotFoundError') {
+      setStatus('nothing to clear — "' + OPFS_ROOT_NAME + '" not present');
+      log('nothing to clear: "' + OPFS_ROOT_NAME + '" does not exist', 'i');
+    } else {
+      setStatus('clear failed: ' + (e && e.message || e), 'err');
+      log('clear failed: ' + (e && e.message || e), 'e');
+    }
+  } finally {
+    setBusy(false);
+  }
+};
+</script>

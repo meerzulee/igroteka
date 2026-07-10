@@ -14,9 +14,15 @@
 // synchronous XHR pulling a game asset over HTTP. File-scope C linkage so
 // host_load (in the anonymous namespace below) can call it.
 #ifdef __EMSCRIPTEN__
+// Browser host-FS shims, serviced by the OPFS fs-worker over a SharedArrayBuffer
+// (runtime/web/zhweb.cpp + worker.js + fsworker.js). File-scope C linkage so the
+// FS helpers below can call them.
 extern "C" int zhweb_host_fetch(const char* url, unsigned char** out, int* len);
-// Existence probe (HTTP HEAD) — the browser has no host FS to stat().
-extern "C" int zhweb_host_exists(const char* url);
+extern "C" int zhweb_host_exists(const char* url);   // 0=absent, 1=file, 2=dir
+// Lists a directory: returns entry count (or -1), malloc'd packed entries via
+// out/len. Packed per entry (LE): u8 type(1=file,2=dir), u32 size, u16 nameLen,
+// u8[nameLen] exact-case name.
+extern "C" int zhweb_host_listdir(const char* url, unsigned char** out, int* len);
 #endif
 
 namespace k32web {
@@ -330,17 +336,29 @@ void build_find(K32::FindState& fs, const std::string& pattern_raw) {
         return false;
     };
 #ifdef __EMSCRIPTEN__
-    // Browser: there is no host FS to opendir/readdir over HTTP, and a wildcard
-    // directory listing needs a server-side manifest (not yet built). But games
-    // frequently use FindFirstFile as an existence check on a SPECIFIC file
-    // (no glob wildcard) — e.g. RTW resolving "underlay_greek_tenamentA.cas".
-    // Handle that by HEAD-probing the single path. Wildcard globs still degrade
-    // to the materialized-VFS matches collected above.
-    if (glob.find_first_of("*?") == std::string::npos && !already(glob)) {
-        std::string full = hdir + "/" + glob;
-        if (zhweb_host_exists(full.c_str()))
-            fs.entries.push_back({glob, false, 0});
+    // Browser: the OPFS fs-worker enumerates the directory. It returns a malloc'd
+    // buffer of packed entries (real C memory — parse directly, then free). Each
+    // entry: u8 type(1=file,2=dir), u32 size LE, u16 nameLen LE, name bytes.
+    unsigned char* buf = nullptr;
+    int len = 0;
+    int count = zhweb_host_listdir(hdir.c_str(), &buf, &len);
+    if (count > 0 && buf && len > 0) {
+        int off = 0;
+        for (int e = 0; e < count && off + 7 <= len; e++) {
+            uint8_t type = buf[off];
+            uint32_t sz = (uint32_t)buf[off + 1] | ((uint32_t)buf[off + 2] << 8) |
+                          ((uint32_t)buf[off + 3] << 16) | ((uint32_t)buf[off + 4] << 24);
+            uint16_t nl = (uint16_t)((uint16_t)buf[off + 5] | ((uint16_t)buf[off + 6] << 8));
+            off += 7;
+            if (off + nl > len) break;
+            std::string lower = norm_path(std::string((const char*)buf + off, nl));
+            off += nl;
+            if (!glob_match(glob, lower) || already(lower)) continue;
+            bool is_dir = type == 2;
+            fs.entries.push_back({lower, is_dir, is_dir ? 0 : sz});
+        }
     }
+    if (buf) std::free(buf);
 #else
     DIR* dp = opendir(hdir.c_str());
     if (!dp) return;
@@ -460,10 +478,10 @@ uint32_t vfs_attrs(const std::string& path_raw) {
     std::string hp = host_path_for(path);
     if (!hp.empty()) {
 #ifdef __EMSCRIPTEN__
-        // Browser: no host FS to stat(). Probe the HTTP server (HEAD). We can't
-        // cheaply tell a file from a directory over HTTP, so report a normal
-        // file — RTW's checks here are existence tests on real asset files.
-        if (zhweb_host_exists(hp.c_str())) return 0x80;
+        // Browser: no host FS to stat(). Ask the OPFS fs-worker (1=file, 2=dir).
+        int kind = zhweb_host_exists(hp.c_str());
+        if (kind == 1) return 0x80;               // FILE_ATTRIBUTE_NORMAL
+        if (kind == 2) return 0x10;               // FILE_ATTRIBUTE_DIRECTORY
 #else
         struct stat st;
         if (stat(hp.c_str(), &st) == 0)

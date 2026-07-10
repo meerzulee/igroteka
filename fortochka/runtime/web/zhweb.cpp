@@ -22,53 +22,55 @@
 
 using runtime::Machine;
 
-// Synchronous BYTE-EXACT fetch. In a Web Worker a synchronous XHR may set
-// responseType='arraybuffer', which gives the raw bytes regardless of the file's
-// apparent encoding (the text path mis-decodes UTF-16/BOM files, halving them).
-// Returns 1 + malloc'd bytes on HTTP 200, 0 (len=-1) on a miss.
+// The three host-FS shims below are serviced by the fs-worker over a
+// SharedArrayBuffer (see worker.js + fsworker.js). Each reads the C path
+// byte-by-byte (paths are ASCII; avoids UTF8ToString -> TextDecoder, which
+// throws on ALLOW_MEMORY_GROWTH's resizable buffer) and calls the synchronous
+// bridge globals defined in worker.js. The bridge blocks on Atomics until the
+// fs-worker (which owns async OPFS) answers, so these return synchronously.
+
+// Read a whole OPFS file. Returns 1 + malloc'd bytes (caller frees) via *out/*len,
+// or 0 with *len<0 on a miss. Large files are pulled in DATA_BYTES chunks.
 extern "C" EM_JS(int, zhweb_host_fetch, (const char* url, unsigned char** out, int* len), {
-  // Read the C string byte-by-byte (paths are ASCII). Avoids UTF8ToString ->
-  // TextDecoder.decode, which throws on ALLOW_MEMORY_GROWTH's resizable buffer.
   var path = '';
   for (var k = url; HEAPU8[k] !== 0; k++) path += String.fromCharCode(HEAPU8[k]);
-  try {
-    var xhr = new XMLHttpRequest();
-    xhr.open('GET', path, false); // synchronous — Web Worker only
-    try { xhr.responseType = 'arraybuffer'; } catch (e) {}
-    xhr.send();
-    if (xhr.status !== 200 && xhr.status !== 0) { setValue(len, -1, 'i32'); return 0; }
-    var bytes;
-    if (xhr.response && xhr.response.byteLength !== undefined) {
-      bytes = new Uint8Array(xhr.response);          // byte-exact
-    } else {                                          // fallback (no BOM only)
-      var s = xhr.responseText, n = s.length;
-      bytes = new Uint8Array(n);
-      for (var i = 0; i < n; i++) bytes[i] = s.charCodeAt(i) & 0xff;
-    }
-    var p = _malloc(bytes.length || 1);
-    HEAPU8.set(bytes, p);
-    setValue(out, p, 'i32');
-    setValue(len, bytes.length, 'i32');
-    return 1;
-  } catch (e) {
-    setValue(len, -1, 'i32');
-    return 0;
+  var size = zhwebFsStat(path);
+  if (size < 0) { setValue(len, -1, 'i32'); return 0; }
+  var p = _malloc(size || 1);
+  var off = 0;
+  while (off < size) {
+    var n = zhwebFsRead(path, off, Math.min(zhwebFsChunk, size - off));
+    if (n < 0) { _free(p); setValue(len, -1, 'i32'); return 0; }
+    if (n === 0) break; // EOF short read
+    HEAPU8.set(zhwebFsData.subarray(0, n), p + off);
+    off += n;
   }
+  setValue(out, p, 'i32');
+  setValue(len, off, 'i32');
+  return 1;
 });
 
-// Synchronous existence probe (HEAD). Returns 1 if the URL resolves (HTTP 200),
-// 0 otherwise. Used by k32web's GetFileAttributes path: in the browser there is
-// no host filesystem to stat(), so probe the HTTP server. HEAD (not GET) avoids
-// materializing a directory's index-listing HTML as if it were file bytes.
+// Existence probe. Returns 0 (absent), 1 (a file), or 2 (a directory).
 extern "C" EM_JS(int, zhweb_host_exists, (const char* url), {
   var path = '';
   for (var k = url; HEAPU8[k] !== 0; k++) path += String.fromCharCode(HEAPU8[k]);
-  try {
-    var xhr = new XMLHttpRequest();
-    xhr.open('HEAD', path, false); // synchronous — Web Worker only
-    xhr.send();
-    return (xhr.status === 200 || xhr.status === 0) ? 1 : 0;
-  } catch (e) { return 0; }
+  return zhwebFsExists(path);
+});
+
+// List a directory. Returns the entry count (or -1 if absent) and, via *out/*len,
+// a malloc'd buffer of packed entries (caller frees). Packed format per entry
+// (little-endian): u8 type(1=file,2=dir), u32 size, u16 nameLen, u8[nameLen] name.
+extern "C" EM_JS(int, zhweb_host_listdir, (const char* url, unsigned char** out, int* len), {
+  var path = '';
+  for (var k = url; HEAPU8[k] !== 0; k++) path += String.fromCharCode(HEAPU8[k]);
+  var count = zhwebFsListdir(path);
+  if (count < 0) { setValue(len, -1, 'i32'); return -1; }
+  var bytes = zhwebFsListBytes;
+  var p = _malloc(bytes || 1);
+  if (bytes > 0) HEAPU8.set(zhwebFsData.subarray(0, bytes), p);
+  setValue(out, p, 'i32');
+  setValue(len, bytes, 'i32');
+  return count;
 });
 
 namespace {

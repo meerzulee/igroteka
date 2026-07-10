@@ -61,9 +61,16 @@ if (worker) {
     const m = e.data;
     switch (m.type) {
       case 'ready':
-        log('WASM ready — booting RomeTW.exe', 'i');
+        log('WASM + OPFS ready — booting RomeTW.exe from OPFS', 'i');
         setStatus(0, 'booting');
-        worker.postMessage({ type: 'boot', exeURL: '/game-data/RomeTW/RomeTW.exe', assetBase: '/game-data/RomeTW' });
+        break; // worker self-boots (reads the exe + assets from OPFS)
+      case 'needimport':
+        setStatus(0, 'not imported');
+        log('OPFS assets not ready: ' + (m.msg || ''), 'e');
+        statusEl.innerHTML =
+          'Game assets are not imported into OPFS yet. ' +
+          '<a href="import.html" style="color:#6cf">Open the importer →</a> ' +
+          'pick your RomeTW folder, then reload this page.';
         break;
       case 'frame': {
         if (canvas.width !== m.w || canvas.height !== m.h) { canvas.width = m.w; canvas.height = m.h; img = null; }

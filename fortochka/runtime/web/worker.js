@@ -1,65 +1,132 @@
-// RTW Web Worker: loads the zhweb WASM, boots RomeTW.exe, and runs it in slices.
-// Game assets are pulled lazily over HTTP by the WASM (synchronous XHR — allowed
-// here in a Worker). Frames are transferred to the main thread for the canvas.
+// RTW interpreter worker (OPFS build). Loads the zhweb WASM, boots RomeTW.exe,
+// and runs it in slices. Game assets live in OPFS (imported once via import.html).
+//
+// The wasm makes SYNCHRONOUS file calls from deep inside the interpreter. OPFS is
+// async, so a dedicated fs-worker (fsworker.js) owns OPFS access and we bridge to
+// it over a SharedArrayBuffer with Atomics (Approach B). This worker exposes four
+// synchronous globals — zhwebFsExists/Stat/Read/Listdir — that block on the SAB;
+// the EM_JS shims in zhweb.cpp call them. Requires COOP/COEP (see serve.py) for
+// SharedArrayBuffer.
+importScripts('fsproto.js'); // -> FSPROTO
+const P = FSPROTO;
+
 let booted = false;
-const SLICE_M = 40; // million instructions per slice (keeps the worker responsive)
+const SLICE_M = 40; // million instructions per slice
 
 function say(line) { postMessage({ type: 'log', line }); }
 
-// Live asset log: every game file RTW pulls goes through a synchronous XHR here,
-// so wrap open() to surface it (the guest's own stderr routing is unreliable in
-// the -O2 WASM). One line per fetch, with the byte size once it completes.
-const _open = XMLHttpRequest.prototype.open;
-const _send = XMLHttpRequest.prototype.send;
-XMLHttpRequest.prototype.open = function (method, url) {
-  this.__url = url;
-  return _open.apply(this, arguments);
-};
-XMLHttpRequest.prototype.send = function () {
-  const r = _send.apply(this, arguments);
-  const u = (this.__url || '').replace('/game-data/RomeTW/', '');
-  if (this.status === 200 || this.status === 0) {
-    const n = this.response && this.response.byteLength !== undefined ? this.response.byteLength : 0;
-    say('load ' + u + (n ? '  (' + (n / 1024 | 0) + ' KB)' : ''));
-  } else if (this.status === 404) {
-    say('miss ' + u);
-  }
-  return r;
-};
+// ---- SAB bridge to the fs-worker --------------------------------------------
+const ctrlSAB = new SharedArrayBuffer(P.CTRL_LEN * 4);
+const dataSAB = new SharedArrayBuffer(P.DATA_BYTES);
+const ctrl = new Int32Array(ctrlSAB);
+const data = new Uint8Array(dataSAB);
+const enc = new TextEncoder();
+let fsw = null;
+let fsReady = false;
 
-// Predefine Module BEFORE loading the WASM glue so the hooks are registered.
+// Expose the data view for the EM_JS READ/LISTDIR shims to copy out of.
+globalThis.zhwebFsData = data;
+
+// Write the request path, signal the fs-worker, block until it responds.
+// Returns ctrl[STATUS] (op-specific). Never returns without a response (the
+// fs-worker force-RESPs on error), so the interpreter can't hang.
+function fsCall(op, path, offset, maxlen) {
+  const bytes = enc.encode(path);
+  if (bytes.length > P.DATA_BYTES) return -1; // absurd path
+  data.set(bytes, 0);
+  Atomics.store(ctrl, P.PATH_LEN, bytes.length);
+  Atomics.store(ctrl, P.OP, op);
+  Atomics.store(ctrl, P.OFFSET, offset | 0);
+  Atomics.store(ctrl, P.MAXLEN, maxlen | 0);
+  Atomics.store(ctrl, P.SIGNAL, P.REQ);
+  fsw.postMessage('go');
+  Atomics.wait(ctrl, P.SIGNAL, P.REQ); // -> RESP
+  return Atomics.load(ctrl, P.STATUS);
+}
+
+// Synchronous bridge API used by the EM_JS shims (see zhweb.cpp).
+globalThis.zhwebFsExists = (path) => fsCall(P.OP_EXISTS, path, 0, 0);   // 0|1(file)|2(dir)
+globalThis.zhwebFsStat = (path) => fsCall(P.OP_STAT, path, 0, 0);       // size | -1
+globalThis.zhwebFsRead = (path, off, len) =>                            // bytes in data[0..n)
+  fsCall(P.OP_READ, path, off, Math.min(len, P.DATA_BYTES));
+globalThis.zhwebFsListdir = (path) => {                                 // -> count (bytes in EXTRA)
+  const count = fsCall(P.OP_LISTDIR, path, 0, 0);
+  globalThis.zhwebFsListBytes = Atomics.load(ctrl, P.EXTRA);
+  return count;
+};
+globalThis.zhwebFsChunk = P.DATA_BYTES;
+
+// ---- read a whole OPFS file async (for the exe, before boot) -----------------
+async function opfsReadFile(relPath) {
+  const root = await navigator.storage.getDirectory();
+  let dir = await root.getDirectoryHandle('rtw');
+  const segs = relPath.split('/').filter(Boolean);
+  const base = segs.pop();
+  for (const s of segs) dir = await dir.getDirectoryHandle(s);
+  const fh = await dir.getFileHandle(base);
+  return new Uint8Array(await (await fh.getFile()).arrayBuffer());
+}
+
+// ---- wasm module -------------------------------------------------------------
 var Module = {
-  onRuntimeInitialized: () => postMessage({ type: 'ready' }),
+  onRuntimeInitialized: () => { wasmReady = true; tryBoot(); },
   print: (s) => say(s),
   printErr: (s) => say(s),
   onAbort: (what) => postMessage({ type: 'error', msg: 'WASM abort: ' + what }),
-  instantiateWasm: undefined,
 };
+let wasmReady = false;
+
+say('worker: spawning fs-worker …');
+fsw = new Worker('fsworker.js');
+fsw.onmessage = (e) => {
+  const m = e.data;
+  if (m && m.type === 'ready') { fsReady = true; say('fs-worker: OPFS ready'); tryBoot(); }
+  else if (m && m.type === 'error') {
+    // Not imported yet (or partial import) — tell the page to show the importer.
+    postMessage({ type: 'needimport', msg: m.msg });
+  }
+};
+fsw.onerror = (e) => postMessage({ type: 'error', msg: 'fs-worker error: ' + (e.message || e) });
+fsw.postMessage({ type: 'init', ctrl: ctrlSAB, data: dataSAB });
 
 say('worker: loading zhweb.js …');
-try {
-  importScripts('zhweb.js');
-  say('worker: zhweb.js loaded, initializing WASM …');
-} catch (e) {
-  postMessage({ type: 'error', msg: 'importScripts(zhweb.js) failed: ' + e });
-}
+try { importScripts('zhweb.js'); }
+catch (e) { postMessage({ type: 'error', msg: 'importScripts(zhweb.js) failed: ' + e }); }
 
 function cstr(s) {
-  const bytes = new TextEncoder().encode(s + '\0');
+  const bytes = enc.encode(s + '\0');
   const p = Module._malloc(bytes.length);
   Module.HEAPU8.set(bytes, p);
   return p;
 }
 
+let bootStarted = false;
+async function tryBoot() {
+  if (bootStarted || !fsReady || !wasmReady) return;
+  bootStarted = true;
+  try {
+    postMessage({ type: 'ready' });
+    say('worker: reading RomeTW.exe from OPFS …');
+    const exe = await opfsReadFile('RomeTW.exe');
+    say('worker: RomeTW.exe (' + exe.length + ' bytes), booting …');
+    const p = Module._malloc(exe.length);
+    Module.HEAPU8.set(exe, p);
+    const base = cstr('rtw'); // OPFS root dir name; host_path_for prepends it
+    const rc = Module._zhweb_boot(p, exe.length, base, SLICE_M);
+    Module._free(p); Module._free(base);
+    if (rc < 0) { postMessage({ type: 'error', msg: 'zhweb_boot failed rc=' + rc }); return; }
+    booted = true;
+    pump();
+  } catch (e) {
+    postMessage({ type: 'error', msg: 'boot exception: ' + e });
+  }
+}
+
 function pump() {
   if (!booted) return;
   let status;
-  try {
-    status = Module._zhweb_slice(SLICE_M);
-  } catch (e) {
-    postMessage({ type: 'error', msg: 'slice crashed: ' + e });
-    return;
-  }
+  try { status = Module._zhweb_slice(SLICE_M); }
+  catch (e) { postMessage({ type: 'error', msg: 'slice crashed: ' + e }); return; }
   const ptr = Module._zhweb_fb_ptr();
   const w = Module._zhweb_fb_width(), h = Module._zhweb_fb_height();
   const icount = Module._zhweb_icount();
@@ -69,28 +136,6 @@ function pump() {
   } else {
     postMessage({ type: 'progress', icount });
   }
-  if (status === -3) setTimeout(pump, 0);          // still running (Machine::RUNNING)
+  if (status === -3) setTimeout(pump, 0);
   else postMessage({ type: 'done', code: status, icount });
 }
-
-onmessage = async (e) => {
-  const msg = e.data;
-  if (msg.type !== 'boot') return;
-  try {
-    postMessage({ type: 'progress', icount: 0, note: 'fetching RomeTW.exe' });
-    const resp = await fetch(msg.exeURL);
-    if (!resp.ok) { postMessage({ type: 'error', msg: 'RomeTW.exe HTTP ' + resp.status + ' at ' + msg.exeURL }); return; }
-    const exe = new Uint8Array(await resp.arrayBuffer());
-    say('worker: RomeTW.exe fetched (' + exe.length + ' bytes), booting …');
-    const p = Module._malloc(exe.length);
-    Module.HEAPU8.set(exe, p);
-    const base = cstr(msg.assetBase);
-    const rc = Module._zhweb_boot(p, exe.length, base, SLICE_M);
-    Module._free(p); Module._free(base);
-    if (rc < 0) { postMessage({ type: 'error', msg: 'zhweb_boot failed rc=' + rc + ' (PE load)' }); return; }
-    booted = true;
-    pump();
-  } catch (e) {
-    postMessage({ type: 'error', msg: 'boot exception: ' + e });
-  }
-};

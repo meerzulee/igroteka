@@ -38,8 +38,9 @@ else
   echo "      re-grep 'UTF8Decoder.decode(' in build-web/zhweb.js and update the perl regex."
 fi
 
-# The browser shell (page + worker) is version-controlled here in runtime/web/;
-# copy it next to the artifacts so the server can serve one directory.
-cp runtime/web/rtw.html runtime/web/worker.js build-web/
+# The browser shell (page, workers, import UI, protocol) is version-controlled
+# here in runtime/web/; copy it next to the artifacts so the server serves one dir.
+cp runtime/web/rtw.html runtime/web/worker.js runtime/web/fsworker.js \
+   runtime/web/fsproto.js runtime/web/import.html build-web/
 
 echo "built build-web/zhweb.{js,wasm}  ($(stat -f%z build-web/zhweb.wasm) bytes)"
