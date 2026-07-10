@@ -20,6 +20,7 @@ struct K32 {
     uint32_t tls[64] = {};   // Tls{Alloc,Get,Set,Free} slots
     bool tls_used[64] = {};
     uint32_t cmdline = 0;    // cached GetCommandLineA guest string
+    uint32_t env_a = 0, env_w = 0; // cached GetEnvironmentStrings(A/W) blocks
     uint32_t heap_handle = 0x00E70001; // one process heap pseudo-handle
     // Interned DLL names for LoadLibrary/GetModuleHandle; the handle is
     // MODULE_TAG + table index, so GetProcAddress can scope a lookup to the
@@ -121,6 +122,12 @@ std::string read_wstr_narrow(Machine& m, uint32_t p, uint32_t max = 4096) {
         s.push_back((char)(w & 0xFF));
     }
     return s;
+}
+// Write a 16-bit value into guest memory (bounds-checked per byte via the copy
+// helper above), used to emit UTF-16LE.
+inline void guest_write16(Machine& m, uint32_t dst, uint16_t v) {
+    uint8_t b[2] = {(uint8_t)(v & 0xFF), (uint8_t)(v >> 8)};
+    guest_write_bytes(m, dst, b, 2);
 }
 
 // Intern a DLL name (normalized: lowercase, no trailing ".dll") → module handle.
@@ -582,6 +589,215 @@ void install(Machine& m) {
             return true;
         }
         if (name == "FreeLibrary") { m.ret(1, 1); return true; }
+
+        // ---- CRT pre-main surface (MSVC __tmainCRTStartup) ----
+        // Atomics (single guest thread → a plain read-modify-write is atomic).
+        if (name == "InterlockedIncrement") {
+            uint32_t p = m.arg(0), v = m.read32(p) + 1;
+            m.write32(p, v);
+            m.ret(1, v);
+            return true;
+        }
+        if (name == "InterlockedDecrement") {
+            uint32_t p = m.arg(0), v = m.read32(p) - 1;
+            m.write32(p, v);
+            m.ret(1, v);
+            return true;
+        }
+        if (name == "InterlockedExchange") {
+            uint32_t p = m.arg(0), old = m.read32(p);
+            m.write32(p, m.arg(1));
+            m.ret(2, old);
+            return true;
+        }
+        // Code-page / locale: RTW is ANSI, so a CP-agnostic passthrough
+        // (low-byte narrow, zero-extend wide, ASCII classification) suffices.
+        if (name == "GetCPInfo") {
+            // GetCPInfo(cp, LPCPINFO): {UINT MaxCharSize; BYTE DefaultChar[2];
+            // BYTE LeadByte[12]} = 20 bytes. Single-byte codepage.
+            uint32_t p = m.arg(1);
+            m.write32(p + 0, 1);       // MaxCharSize
+            m.write32(p + 4, 0x003F);  // DefaultChar = '?', 0
+            m.write32(p + 8, 0);       // LeadByte ranges: none
+            m.write32(p + 12, 0);
+            m.write32(p + 16, 0);
+            m.ret(2, 1);
+            return true;
+        }
+        if (name == "GetOEMCP") { m.ret(0, 437); return true; }
+        if (name == "IsValidCodePage") { m.ret(1, 1); return true; }
+        if (name == "IsValidLocale") { m.ret(2, 1); return true; }
+        if (name == "GetUserDefaultLCID") { m.ret(0, 0x0409); return true; } // en-US
+        if (name == "WideCharToMultiByte") {
+            // (cp, flags, wstr, wlen, mbstr, mblen, defchar, usedflag). wlen=-1
+            // → NUL-terminated (count includes the NUL). mblen=0 → return the
+            // required byte count. Narrowing = take the low byte of each wchar.
+            uint32_t wstr = m.arg(2);
+            int32_t wlen = (int32_t)m.arg(3);
+            uint32_t mbstr = m.arg(4), mblen = m.arg(5);
+            uint32_t n = 0; // source wchar count
+            if (wlen < 0) { while (m.read32(wstr + n * 2) & 0xFFFF) n++; n++; }
+            else n = (uint32_t)wlen;
+            if (mblen == 0) { m.ret(8, n); return true; } // query length
+            uint32_t out = n < mblen ? n : mblen;
+            for (uint32_t i = 0; i < out; i++) {
+                uint8_t b = (uint8_t)(m.read32(wstr + i * 2) & 0xFF); // low byte
+                guest_write_bytes(m, mbstr + i, &b, 1);
+            }
+            m.ret(8, out);
+            return true;
+        }
+        if (name == "MultiByteToWideChar") {
+            // (cp, flags, mbstr, mblen, wstr, wlen). mblen=-1 → NUL-terminated.
+            // wlen=0 → return required wchar count. Widening = zero-extend byte.
+            uint32_t mbstr = m.arg(2);
+            int32_t mblen = (int32_t)m.arg(3);
+            uint32_t wstr = m.arg(4), wlen = m.arg(5);
+            uint32_t n = 0;
+            if (mblen < 0) { while (m.read32(mbstr + n) & 0xFF) n++; n++; }
+            else n = (uint32_t)mblen;
+            if (wlen == 0) { m.ret(6, n); return true; }
+            uint32_t out = n < wlen ? n : wlen;
+            for (uint32_t i = 0; i < out; i++)
+                guest_write16(m, wstr + i * 2, (uint16_t)(m.read32(mbstr + i) & 0xFF));
+            m.ret(6, out);
+            return true;
+        }
+        if (name == "GetStringTypeA" || name == "GetStringTypeW") {
+            // A: (lcid, dwInfoType, src, cch, lpCharType). W: (dwInfoType, src,
+            // cch, lpCharType). Only CT_CTYPE1 supported (ASCII classification).
+            bool w = name == "GetStringTypeW";
+            uint32_t src = m.arg(w ? 1 : 2);
+            int32_t cch = (int32_t)m.arg(w ? 2 : 3);
+            uint32_t out = m.arg(w ? 3 : 4);
+            uint32_t step = w ? 2 : 1;
+            uint32_t n = 0;
+            if (cch < 0) { while (m.read32(src + n * step) & (w ? 0xFFFF : 0xFF)) n++; n++; }
+            else n = (uint32_t)cch;
+            for (uint32_t i = 0; i < n; i++) {
+                uint32_t c = m.read32(src + i * step) & (w ? 0xFFFF : 0xFF);
+                uint16_t t = 0;
+                if (c >= 'A' && c <= 'Z') t |= 0x0001 | 0x0100;        // UPPER|ALPHA
+                else if (c >= 'a' && c <= 'z') t |= 0x0002 | 0x0100;   // LOWER|ALPHA
+                else if (c >= '0' && c <= '9') t |= 0x0004;            // DIGIT
+                else if (c == ' ' || (c >= 9 && c <= 13)) t |= 0x0008; // SPACE
+                if (c < 0x20) t |= 0x0020;                             // CNTRL
+                guest_write16(m, out + i * 2, t);
+            }
+            m.ret(w ? 4 : 5, 1);
+            return true;
+        }
+        if (name == "LCMapStringA" || name == "LCMapStringW") {
+            // (lcid, flags, src, srclen, dst, dstlen). LCMAP_LOWERCASE=0x100,
+            // LCMAP_UPPERCASE=0x200. Copy applying the case transform.
+            bool w = name == "LCMapStringW";
+            uint32_t flags = m.arg(1), src = m.arg(2);
+            int32_t srclen = (int32_t)m.arg(3);
+            uint32_t dst = m.arg(4), dstlen = m.arg(5);
+            uint32_t step = w ? 2 : 1, mask = w ? 0xFFFF : 0xFF;
+            uint32_t n = 0;
+            if (srclen < 0) { while (m.read32(src + n * step) & mask) n++; n++; }
+            else n = (uint32_t)srclen;
+            if (dstlen == 0) { m.ret(6, n); return true; } // query length
+            uint32_t out = n < dstlen ? n : dstlen;
+            for (uint32_t i = 0; i < out; i++) {
+                uint32_t c = m.read32(src + i * step) & mask;
+                if ((flags & 0x200) && c >= 'a' && c <= 'z') c -= 32;      // UPPER
+                else if ((flags & 0x100) && c >= 'A' && c <= 'Z') c += 32; // LOWER
+                if (w) guest_write16(m, dst + i * 2, (uint16_t)c);
+                else { uint8_t b = (uint8_t)c; guest_write_bytes(m, dst + i, &b, 1); }
+            }
+            m.ret(6, out);
+            return true;
+        }
+        if (name == "GetLocaleInfoA" || name == "GetLocaleInfoW") {
+            // (lcid, lctype, buf, len). Minimal: an empty string, length 1.
+            // Refine specific LCTYPEs from stub logs if RTW needs them.
+            bool w = name == "GetLocaleInfoW";
+            uint32_t buf = m.arg(2), len = m.arg(3);
+            if (len > 0) { if (w) guest_write16(m, buf, 0); else { uint8_t z = 0; guest_write_bytes(m, buf, &z, 1); } }
+            m.ret(4, 1);
+            return true;
+        }
+        if (name == "EnumSystemLocalesA") {
+            // (lpLocaleEnumProc, dwFlags): reverse-thunk the callback once with
+            // the default locale id string "0409", then stop.
+            uint32_t proc = m.arg(0);
+            if (proc) {
+                uint32_t s = guest_strdup(m, "0409");
+                m.call_guest(proc, {s});
+            }
+            m.ret(2, 1);
+            return true;
+        }
+        // Environment block: a minimal double-NUL-terminated empty block.
+        if (name == "GetEnvironmentStrings" || name == "GetEnvironmentStringsA") {
+            if (!g_k.env_a) {
+                g_k.env_a = m.alloc(2);
+                m.mem()[g_k.env_a] = 0;
+                m.mem()[g_k.env_a + 1] = 0;
+            }
+            m.ret(0, g_k.env_a);
+            return true;
+        }
+        if (name == "GetEnvironmentStringsW") {
+            if (!g_k.env_w) {
+                g_k.env_w = m.alloc(4);
+                for (int i = 0; i < 4; i++) m.mem()[g_k.env_w + i] = 0;
+            }
+            m.ret(0, g_k.env_w);
+            return true;
+        }
+        if (name == "FreeEnvironmentStringsA" || name == "FreeEnvironmentStringsW") {
+            m.ret(1, 1); // blocks are HLE-owned/immortal
+            return true;
+        }
+        if (name == "GetEnvironmentVariableA") {
+            g_k.last_error = 203; // ERROR_ENVVAR_NOT_FOUND
+            m.ret(3, 0); // not found
+            return true;
+        }
+        if (name == "SetEnvironmentVariableA" || name == "SetEnvironmentVariableW") {
+            m.ret(2, 1);
+            return true;
+        }
+        // Handles / std streams.
+        if (name == "GetFileType") {
+            uint32_t h = m.arg(0);
+            uint32_t t = (h == H_STDIN || h == H_STDOUT || h == H_STDERR) ? 2 /*CHAR*/
+                       : 1 /*DISK*/;
+            m.ret(1, t);
+            return true;
+        }
+        if (name == "SetHandleCount") { m.ret(1, m.arg(0)); return true; }
+        if (name == "SetStdHandle") { m.ret(2, 1); return true; }
+        if (name == "GetModuleFileNameA") {
+            // (hModule, lpFilename, nSize). Report a plausible install path.
+            const char* path = "C:\\RTW\\RomeTW.exe";
+            uint32_t buf = m.arg(1), size = m.arg(2);
+            uint32_t n = 0;
+            while (path[n]) n++;
+            uint32_t out = n < size ? n : size;
+            guest_write_bytes(m, buf, (const uint8_t*)path, out);
+            if (out < size) { uint8_t z = 0; guest_write_bytes(m, buf + out, &z, 1); }
+            m.ret(3, out);
+            return true;
+        }
+        if (name == "UnhandledExceptionFilter") {
+            m.ret(1, 1); // EXCEPTION_EXECUTE_HANDLER (never hit on the happy path)
+            return true;
+        }
+        if (name == "TerminateProcess") {
+            uint32_t h = m.arg(0);
+            if (h == 0xFFFFFFFFu) { // the current process → end the run
+                m.exited = true;
+                m.exit_code = m.arg(1);
+                return true;
+            }
+            m.ret(2, 1);
+            return true;
+        }
+
         if (name == "GetCommandLineA") {
             if (!g_k.cmdline) g_k.cmdline = guest_strdup(m, "fortochka.exe");
             m.ret(0, g_k.cmdline);
