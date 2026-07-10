@@ -39,7 +39,7 @@ constexpr uint8_t kOne[256] = {
     /*D0*/ M, M, M, M, X, X, 0, 0,
     /*D8*/ M, M, M, M, M, M, M, M,          // x87 escapes: length-correct, UD at exec
     /*E0*/ R8, R8, R8, R8, X, X, X, X,     /*E8*/ RW, RW, X, R8, X, X, X, X,
-    /*F0*/ 0, X, 0, 0, 0, 0, M, M,         /*F8*/ 0, 0, 0, 0, 0, 0, M, M,
+    /*F0*/ 0, X, 0, 0, 0, 0, M|I8, M|IW,   /*F8*/ 0, 0, 0, 0, 0, 0, M, M,
 };
 
 constexpr uint8_t kTwo[256] = {
