@@ -12,7 +12,9 @@ SRC=(
 )
 
 mkdir -p build-web
-emcc -std=gnu++20 -O2 -fwasm-exceptions \
+# NB: -flto breaks EM_JS symbol resolution (zhweb_host_fetch/_exists are emitted
+# as em_js symbols LTO can't see cross-TU), so LTO is intentionally omitted.
+emcc -std=gnu++20 -O3 -fwasm-exceptions \
   -Izhelezo/include -Ipeload/include -Iruntime/include -Ik32web/include \
   -Iu32web/include -Id9web/include -Isysweb/include \
   "${SRC[@]}" \
