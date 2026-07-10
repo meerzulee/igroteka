@@ -56,6 +56,21 @@ extern "C" EM_JS(int, zhweb_host_fetch, (const char* url, unsigned char** out, i
   }
 });
 
+// Synchronous existence probe (HEAD). Returns 1 if the URL resolves (HTTP 200),
+// 0 otherwise. Used by k32web's GetFileAttributes path: in the browser there is
+// no host filesystem to stat(), so probe the HTTP server. HEAD (not GET) avoids
+// materializing a directory's index-listing HTML as if it were file bytes.
+extern "C" EM_JS(int, zhweb_host_exists, (const char* url), {
+  var path = '';
+  for (var k = url; HEAPU8[k] !== 0; k++) path += String.fromCharCode(HEAPU8[k]);
+  try {
+    var xhr = new XMLHttpRequest();
+    xhr.open('HEAD', path, false); // synchronous — Web Worker only
+    xhr.send();
+    return (xhr.status === 200 || xhr.status === 0) ? 1 : 0;
+  } catch (e) { return 0; }
+});
+
 namespace {
 std::unique_ptr<Machine> g_m;
 uint32_t g_fb_w = 0, g_fb_h = 0;

@@ -15,6 +15,8 @@
 // host_load (in the anonymous namespace below) can call it.
 #ifdef __EMSCRIPTEN__
 extern "C" int zhweb_host_fetch(const char* url, unsigned char** out, int* len);
+// Existence probe (HTTP HEAD) — the browser has no host FS to stat().
+extern "C" int zhweb_host_exists(const char* url);
 #endif
 
 namespace k32web {
@@ -443,9 +445,16 @@ uint32_t vfs_attrs(const std::string& path_raw) {
     // Host mount: is it a real file or directory on disk?
     std::string hp = host_path_for(path);
     if (!hp.empty()) {
+#ifdef __EMSCRIPTEN__
+        // Browser: no host FS to stat(). Probe the HTTP server (HEAD). We can't
+        // cheaply tell a file from a directory over HTTP, so report a normal
+        // file — RTW's checks here are existence tests on real asset files.
+        if (zhweb_host_exists(hp.c_str())) return 0x80;
+#else
         struct stat st;
         if (stat(hp.c_str(), &st) == 0)
             return S_ISDIR(st.st_mode) ? 0x10 : 0x80;
+#endif
     }
     return INVALID_HANDLE;
 }
