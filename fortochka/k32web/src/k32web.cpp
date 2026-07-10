@@ -153,8 +153,15 @@ uint32_t guest_write_bytes(Machine& m, uint32_t dst, const uint8_t* src, uint32_
 // canonicalize to the same VFS keys as their absolute forms (Codex finding).
 std::string resolve_path(const std::string& raw) {
     std::string p = norm_path(raw);
-    bool absolute = (p.size() >= 2 && p[1] == ':') || (!p.empty() && p[0] == '/');
-    if (!absolute) p = g_k.cwd + "/" + p;
+    if (!p.empty() && p[0] == '/') {
+        // Root-anchored: anchor to the cwd's drive ("\\data" → "c:/data"),
+        // not the cwd itself — and keep the drive segment through the rejoin
+        // below (a bare leading '/' would be dropped as an empty segment).
+        std::string drive = g_k.cwd.substr(0, g_k.cwd.find('/'));
+        p = drive + p;
+    } else if (!(p.size() >= 2 && p[1] == ':')) {
+        p = g_k.cwd + "/" + p; // relative: join to the cwd
+    }
     std::vector<std::string> segs;
     size_t i = 0;
     while (i <= p.size()) {
@@ -1270,6 +1277,10 @@ void install(Machine& m) {
                 std::fprintf(stderr, "regweb: query miss %s [%s]\n", key.c_str(),
                              vname.c_str());
                 m.ret(6, ERROR_FILE_NOT_FOUND);
+                return true;
+            }
+            if (pData && !pcb) { // Win32: data without a size is invalid
+                m.ret(6, 87 /*ERROR_INVALID_PARAMETER*/);
                 return true;
             }
             if (pType) m.write32(pType, v->type);

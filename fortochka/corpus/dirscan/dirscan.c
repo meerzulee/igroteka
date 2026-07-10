@@ -59,6 +59,9 @@ void start(void)
     if (GetFileAttributesA("data\\b.pack") != FILE_ATTRIBUTE_NORMAL) ExitProcess(44);
     if (GetFileAttributesA("data\\world\\..\\b.pack") != FILE_ATTRIBUTE_NORMAL)
         ExitProcess(45);
+    /* Root-anchored path resolves against the cwd's drive, keeping the root. */
+    if (GetFileAttributesA("\\rtw\\data\\b.pack") != FILE_ATTRIBUTE_NORMAL)
+        ExitProcess(46);
 
     ExitProcess(42);
 }
