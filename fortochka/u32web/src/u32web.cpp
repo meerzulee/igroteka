@@ -37,6 +37,10 @@ struct State {
     std::deque<Msg> queue;
     bool class_registered = false;
     uint32_t width = 640, height = 480;   // client area
+    // Window longs for the single top-level window (GetWindowLong/SetWindowLong).
+    // GWL_WNDPROC is stored in `wndproc` above so subclassing redirects dispatch.
+    uint32_t userdata = 0, style = 0, exstyle = 0;
+    int cursor_show = 0;                   // ShowCursor display counter
     std::vector<uint32_t> fb;             // ARGB pixels, width*height
     void ensure_fb() {
         if (fb.size() != (size_t)width * height) fb.assign((size_t)width * height, 0xFF000000u);
@@ -262,6 +266,109 @@ void install(Machine& m) {
             m.ret(4, lresult);
             return true;
         }
+        // ---- window / system metrics a game reads during startup ----
+        if (name == "GetSystemMetrics") {
+            // Report a 1024x768 primary display; other indices 0 (a game that
+            // needs a specific metric will surface it as a wrong-value bug).
+            uint32_t idx = m.arg(0);
+            uint32_t v = idx == 0 /*SM_CXSCREEN*/ ? 1024
+                       : idx == 1 /*SM_CYSCREEN*/ ? 768
+                                                  : 0;
+            m.ret(1, v);
+            return true;
+        }
+        if (name == "AdjustWindowRect" || name == "AdjustWindowRectEx") {
+            // Client rect == window rect in our HLE (no chrome): leave it as-is.
+            m.ret(name == "AdjustWindowRectEx" ? 4 : 3, 1);
+            return true;
+        }
+        if (name == "GetWindowRect") { // hwnd, RECT* → whole window at origin
+            uint32_t r = m.arg(1);
+            m.write32(r + 0, 0);
+            m.write32(r + 4, 0);
+            m.write32(r + 8, s.width);
+            m.write32(r + 12, s.height);
+            m.ret(2, 1);
+            return true;
+        }
+        if (name == "LoadCursorA" || name == "LoadIconA") {
+            m.ret(2, 0x0C000001); // a non-null cursor/icon token
+            return true;
+        }
+        if (name == "SetCursor") { m.ret(1, 0); return true; } // prev = none
+        if (name == "ShowCursor") {
+            s.cursor_show += (m.arg(0) ? 1 : -1);
+            m.ret(1, (uint32_t)s.cursor_show);
+            return true;
+        }
+        if (name == "GetKeyState" || name == "GetAsyncKeyState") {
+            m.ret(1, 0); // headless: no key held
+            return true;
+        }
+        if (name == "GetCursorPos") { // POINT* → (0,0)
+            uint32_t p = m.arg(0);
+            m.write32(p + 0, 0);
+            m.write32(p + 4, 0);
+            m.ret(1, 1);
+            return true;
+        }
+        if (name == "ClientToScreen" || name == "ScreenToClient") {
+            m.ret(2, 1); // identity mapping (window at screen origin)
+            return true;
+        }
+        if (name == "GetWindowLongA") {
+            // hwnd, index. GWL_WNDPROC=-4, GWL_STYLE=-16, GWL_EXSTYLE=-20,
+            // GWL_USERDATA=-21. Unknown indices read as 0.
+            int32_t idx = (int32_t)m.arg(1);
+            uint32_t v = idx == -4 ? s.wndproc
+                       : idx == -16 ? s.style
+                       : idx == -20 ? s.exstyle
+                       : idx == -21 ? s.userdata
+                                    : 0;
+            m.ret(2, v);
+            return true;
+        }
+        if (name == "SetWindowLongA") {
+            // hwnd, index, newval → returns the previous value. GWL_WNDPROC
+            // redirects the dispatch target (window subclassing).
+            int32_t idx = (int32_t)m.arg(1);
+            uint32_t nv = m.arg(2), old;
+            switch (idx) {
+                case -4:  old = s.wndproc;  s.wndproc = nv;  break;
+                case -16: old = s.style;    s.style = nv;    break;
+                case -20: old = s.exstyle;  s.exstyle = nv;  break;
+                case -21: old = s.userdata; s.userdata = nv; break;
+                default:  old = 0;                           break;
+            }
+            m.ret(3, old);
+            return true;
+        }
+        if (name == "MessageBoxA") {
+            m.ret(4, 1); // IDOK — a game's error dialog "OK"s and continues
+            return true;
+        }
+        if (name == "SetTimer") { m.ret(4, m.arg(1) ? m.arg(1) : 1); return true; }
+        if (name == "KillTimer") { m.ret(2, 1); return true; }
+        if (name == "GetForegroundWindow" || name == "GetActiveWindow" ||
+            name == "GetDesktopWindow") {
+            m.ret(0, kFakeHwnd);
+            return true;
+        }
+        if (name == "SetFocus" || name == "SetActiveWindow") {
+            m.ret(1, kFakeHwnd); // previous focus/active window
+            return true;
+        }
+        if (name == "SetForegroundWindow" || name == "BringWindowToTop" ||
+            name == "SetWindowTextA" || name == "EnableWindow" ||
+            name == "MoveWindow" || name == "SetWindowPos") {
+            uint32_t nargs = name == "SetWindowPos" ? 7
+                           : name == "MoveWindow"   ? 6
+                           : name == "SetWindowTextA" || name == "EnableWindow" ? 2
+                                                      : 1;
+            m.ret(nargs, 1);
+            return true;
+        }
+
         // Cosmetic no-ops the corpus/RTW call during window setup.
         if (name == "ShowWindow" || name == "UpdateWindow" ||
             name == "DestroyWindow") {

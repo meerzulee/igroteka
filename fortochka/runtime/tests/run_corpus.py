@@ -40,6 +40,7 @@ CASES = [
     ("rstest.exe", "window_test", ["--d3d", "--expect-center", "0000ff"], 0, "reached the backbuffer"),
     ("gpa.exe", "zhrun", [], 42, None),  # GetProcAddress resolves an import, rejects a bogus name
     ("d3dinit.exe", "zhrun", [], 42, None),  # D3D9 enum/caps/CreateDevice/Reset init path (FFP persona)
+    ("winmgr.exe", "zhrun", [], 42, None),  # window mgmt: metrics, Get/SetWindowLong, GWL_WNDPROC subclass
 ]
 
 
