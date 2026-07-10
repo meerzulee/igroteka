@@ -46,6 +46,7 @@ CASES = [
     ("dirscan.exe", "zhrun", [], 42, None),  # path/cwd + FindFirstFile/FindNextFile glob over the VFS
     ("reg.exe", "zhrun", [], 42, None),  # advapi32 registry shim: create/set/query + miss paths
     ("pump.exe", "zhrun", [], 42, None),  # pump adjuncts + winmm timing + GetDeviceCaps (batch 4)
+    ("crt2.exe", "zhrun", [], 42, None),  # CRT tail: CompareString, MulDiv, time family, file mapping (batch 5)
 ]
 
 

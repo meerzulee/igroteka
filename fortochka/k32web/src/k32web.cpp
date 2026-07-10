@@ -1,6 +1,7 @@
 #include "k32web/k32web.h"
 
 #include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -66,6 +67,14 @@ struct K32 {
     std::vector<RegValue> reg;
     std::vector<std::string> reg_open;    // open-key handles: KEY_TAG + index
     std::vector<std::string> reg_created; // keys made by RegCreateKeyExA
+    // File mappings (CreateFileMappingA): the source VFS file (-1 = anonymous)
+    // and the mapping size. A view is a guest alloc holding a COPY of the file
+    // bytes (identity-mapped, read-mostly; no writeback in tier 0).
+    struct Mapping {
+        int vfs_index = -1;
+        uint32_t size = 0;
+    };
+    std::vector<Mapping> mappings; // handle = MAP_TAG + index
 };
 K32 g_k;
 
@@ -93,6 +102,35 @@ constexpr size_t MAX_FINDS = 4096;
 constexpr uint32_t KEY_TAG = 0x70000000u;
 constexpr size_t MAX_REG_VALUES = 4096, MAX_REG_OPEN = 4096, MAX_REG_KEYS = 4096;
 constexpr uint32_t MAX_REG_DATA = 64u << 10; // one value's data cap
+// File-mapping handle tag: between FILE_TAG and FIND_TAG, own index space.
+constexpr uint32_t MAP_TAG = 0x58000000u;
+constexpr size_t MAX_MAPPINGS = 4096;
+
+// Civil-date → days since the FILETIME epoch (1601-01-01). Standard
+// days-from-civil (Howard Hinnant), rebased from 0000-03-01 to 1601-01-01.
+int64_t days_from_1601(int y, int m, int d) {
+    y -= m <= 2;
+    int64_t era = (y >= 0 ? y : y - 399) / 400;
+    unsigned yoe = (unsigned)(y - era * 400);
+    unsigned doy = (153u * (unsigned)(m + (m > 2 ? -3 : 9)) + 2) / 5 + (unsigned)d - 1;
+    unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    int64_t days_epoch = era * 146097 + (int64_t)doe - 719468; // days since 1970-01-01
+    return days_epoch + 134774;                                // 1601→1970 offset
+}
+// Inverse: days since 1601 → civil date.
+void civil_from_1601(int64_t z, int& y, int& m, int& d) {
+    z -= 134774; // to days since 1970
+    z += 719468;
+    int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+    unsigned doe = (unsigned)(z - era * 146097);
+    unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    int64_t yy = (int64_t)yoe + era * 400;
+    unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    unsigned mp = (5 * doy + 2) / 153;
+    d = (int)(doy - (153 * mp + 2) / 5 + 1);
+    m = (int)(mp + (mp < 10 ? 3 : -9));
+    y = (int)(yy + (m <= 2));
+}
 
 // Normalize a VFS path: lowercase, backslashes → forward slashes.
 std::string norm_path(std::string s) {
@@ -1144,6 +1182,216 @@ void install(Machine& m) {
                 return true;
             }
             m.ret(2, 1);
+            return true;
+        }
+
+        // ---- CRT tail: compare, probes, arithmetic, memory status ----
+        if (name == "CompareStringA" || name == "CompareStringW") {
+            // (lcid, flags, str1, cch1, str2, cch2) → 1 LESS / 2 EQUAL / 3
+            // GREATER. cch -1 = NUL-terminated. NORM_IGNORECASE = 1.
+            bool w = name == "CompareStringW";
+            bool nocase = m.arg(1) & 1;
+            uint32_t s1 = m.arg(2), s2 = m.arg(4);
+            int32_t c1 = (int32_t)m.arg(3), c2 = (int32_t)m.arg(5);
+            uint32_t step = w ? 2 : 1, mask = w ? 0xFFFF : 0xFF;
+            uint32_t n1 = 0, n2 = 0;
+            if (c1 < 0) { while (n1 < MAX_CONV_CHARS && (m.read32(s1 + n1 * step) & mask)) n1++; }
+            else n1 = (uint32_t)c1 > MAX_CONV_CHARS ? MAX_CONV_CHARS : (uint32_t)c1;
+            if (c2 < 0) { while (n2 < MAX_CONV_CHARS && (m.read32(s2 + n2 * step) & mask)) n2++; }
+            else n2 = (uint32_t)c2 > MAX_CONV_CHARS ? MAX_CONV_CHARS : (uint32_t)c2;
+            uint32_t lim = n1 < n2 ? n1 : n2, r = 2;
+            for (uint32_t i = 0; i < lim; i++) {
+                uint32_t a = m.read32(s1 + i * step) & mask;
+                uint32_t b = m.read32(s2 + i * step) & mask;
+                if (nocase) {
+                    if (a >= 'A' && a <= 'Z') a += 32;
+                    if (b >= 'A' && b <= 'Z') b += 32;
+                }
+                if (a != b) { r = a < b ? 1 : 3; break; }
+            }
+            if (r == 2 && n1 != n2) r = n1 < n2 ? 1 : 3;
+            m.ret(6, r);
+            return true;
+        }
+        if (name == "IsBadReadPtr" || name == "IsBadWritePtr") {
+            // (lp, ucb) → 0 = ok, nonzero = bad. Bad if null or outside arena.
+            uint32_t lp = m.arg(0), n = m.arg(1);
+            bool bad = lp == 0 || lp >= m.mem_size() || m.mem_size() - lp < n;
+            m.ret(2, bad ? 1 : 0);
+            return true;
+        }
+        if (name == "IsBadCodePtr") {
+            uint32_t lp = m.arg(0);
+            m.ret(1, (lp == 0 || lp >= m.mem_size()) ? 1 : 0);
+            return true;
+        }
+        if (name == "MulDiv") {
+            // (int a, int b, int c) → (a*b + c/2)/c, 64-bit intermediate,
+            // rounded to nearest; c == 0 → -1.
+            int32_t a = (int32_t)m.arg(0), b = (int32_t)m.arg(1),
+                    c = (int32_t)m.arg(2);
+            if (c == 0) { m.ret(3, (uint32_t)-1); return true; }
+            int64_t v = (int64_t)a * b;
+            v += (v >= 0) == (c >= 0) ? c / 2 : -(c / 2);
+            m.ret(3, (uint32_t)(int32_t)(v / c));
+            return true;
+        }
+        if (name == "GlobalMemoryStatus") {
+            // (LPMEMORYSTATUS): 32 bytes of dwords. A roomy 512 MB machine.
+            uint32_t p = m.arg(0);
+            m.write32(p + 0, 32);           // dwLength
+            m.write32(p + 4, 25);           // dwMemoryLoad %
+            m.write32(p + 8, 512u << 20);   // dwTotalPhys
+            m.write32(p + 12, 384u << 20);  // dwAvailPhys
+            m.write32(p + 16, 1024u << 20); // dwTotalPageFile
+            m.write32(p + 20, 896u << 20);  // dwAvailPageFile
+            m.write32(p + 24, 0x7FFE0000);  // dwTotalVirtual (~2GB user space)
+            m.write32(p + 28, 0x70000000);  // dwAvailVirtual
+            m.ret(1, 1);
+            return true;
+        }
+
+        // ---- wall-clock family (deterministic fixed date: 2004-06-15 12:00) ----
+        if (name == "GetSystemTime" || name == "GetLocalTime") {
+            uint32_t p = m.arg(0); // SYSTEMTIME: 8 WORDs
+            int64_t days = days_from_1601(2004, 6, 15);
+            guest_write16(m, p + 0, 2004);                    // wYear
+            guest_write16(m, p + 2, 6);                       // wMonth
+            guest_write16(m, p + 4, (uint16_t)((days + 1) % 7)); // wDayOfWeek
+            guest_write16(m, p + 6, 15);                      // wDay
+            guest_write16(m, p + 8, 12);                      // wHour
+            guest_write16(m, p + 10, 0);                      // wMinute
+            guest_write16(m, p + 12, 0);                      // wSecond
+            guest_write16(m, p + 14, 0);                      // wMilliseconds
+            m.ret(1, 0);
+            return true;
+        }
+        if (name == "GetTimeZoneInformation") {
+            // (LPTIME_ZONE_INFORMATION): 172 bytes, zeroed = UTC, Bias 0.
+            uint32_t p = m.arg(0);
+            for (uint32_t off = 0; off < 172; off += 4) m.write32(p + off, 0);
+            m.ret(1, 0); // TIME_ZONE_ID_UNKNOWN
+            return true;
+        }
+        if (name == "SystemTimeToFileTime") {
+            // (const SYSTEMTIME*, LPFILETIME): real calendar math so the
+            // SystemTime→FileTime→SystemTime round trip is exact.
+            uint32_t st = m.arg(0), ft = m.arg(1);
+            int y = (int)(m.read32(st + 0) & 0xFFFF);
+            int mo = (int)(m.read32(st + 2) & 0xFFFF);
+            int d = (int)(m.read32(st + 6) & 0xFFFF);
+            uint32_t hh = m.read32(st + 8) & 0xFFFF, mi = m.read32(st + 10) & 0xFFFF,
+                     ss = m.read32(st + 12) & 0xFFFF, ms = m.read32(st + 14) & 0xFFFF;
+            if (y < 1601 || mo < 1 || mo > 12 || d < 1 || d > 31) {
+                m.ret(2, 0);
+                return true;
+            }
+            uint64_t t = (uint64_t)days_from_1601(y, mo, d) * 86400ull;
+            t = ((t + hh * 3600ull + mi * 60ull + ss) * 1000ull + ms) * 10000ull;
+            m.write32(ft + 0, (uint32_t)t);
+            m.write32(ft + 4, (uint32_t)(t >> 32));
+            m.ret(2, 1);
+            return true;
+        }
+        if (name == "FileTimeToSystemTime") {
+            uint32_t ft = m.arg(0), st = m.arg(1);
+            uint64_t t = m.read32(ft) | ((uint64_t)m.read32(ft + 4) << 32);
+            uint64_t ms_total = t / 10000ull;
+            uint64_t days = ms_total / 86400000ull;
+            uint32_t ms_day = (uint32_t)(ms_total % 86400000ull);
+            int y, mo, d;
+            civil_from_1601((int64_t)days, y, mo, d);
+            guest_write16(m, st + 0, (uint16_t)y);
+            guest_write16(m, st + 2, (uint16_t)mo);
+            guest_write16(m, st + 4, (uint16_t)((days + 1) % 7));
+            guest_write16(m, st + 6, (uint16_t)d);
+            guest_write16(m, st + 8, (uint16_t)(ms_day / 3600000u));
+            guest_write16(m, st + 10, (uint16_t)(ms_day / 60000u % 60u));
+            guest_write16(m, st + 12, (uint16_t)(ms_day / 1000u % 60u));
+            guest_write16(m, st + 14, (uint16_t)(ms_day % 1000u));
+            m.ret(2, 1);
+            return true;
+        }
+        if (name == "LocalFileTimeToFileTime" || name == "FileTimeToLocalFileTime") {
+            // Bias 0 (UTC): the identity copy.
+            uint32_t src = m.arg(0), dst = m.arg(1);
+            m.write32(dst + 0, m.read32(src + 0));
+            m.write32(dst + 4, m.read32(src + 4));
+            m.ret(2, 1);
+            return true;
+        }
+        if (name == "SetFileTime") { m.ret(4, 1); return true; }
+
+        // ---- file mapping (views are copies; no writeback in tier 0) ----
+        if (name == "CreateFileMappingA") {
+            // (hFile, lpAttributes, flProtect, dwMaxSizeHigh, dwMaxSizeLow,
+            //  lpName). hFile == INVALID_HANDLE_VALUE → anonymous (pagefile).
+            uint32_t hFile = m.arg(0), size_lo = m.arg(4);
+            if (g_k.mappings.size() >= MAX_MAPPINGS) { m.ret(6, 0); return true; }
+            K32::Mapping map;
+            if (hFile == INVALID_HANDLE) { // anonymous: needs an explicit size
+                if (size_lo == 0 || size_lo > MAX_FILE_BYTES) { m.ret(6, 0); return true; }
+                map.size = size_lo;
+            } else {
+                K32::OpenFile* of = as_open_file(hFile);
+                if (!of) { m.ret(6, 0); return true; }
+                map.vfs_index = of->vfs_index;
+                uint32_t fsz = (uint32_t)g_k.vfs[of->vfs_index].data.size();
+                map.size = size_lo ? (size_lo < fsz ? size_lo : fsz) : fsz;
+                if (map.size == 0) { m.ret(6, 0); return true; } // empty file
+            }
+            g_k.mappings.push_back(map);
+            m.ret(6, MAP_TAG + (uint32_t)(g_k.mappings.size() - 1));
+            return true;
+        }
+        if (name == "MapViewOfFile") {
+            // (hMapping, dwDesiredAccess, dwOffsetHigh, dwOffsetLow, dwBytes).
+            // Alloc guest memory and copy the file bytes in (identity-mapped:
+            // the returned VA is directly readable by guest code).
+            uint32_t h = m.arg(0), off_lo = m.arg(3), want = m.arg(4);
+            if (h < MAP_TAG || (h - MAP_TAG) >= g_k.mappings.size()) {
+                m.ret(5, 0);
+                return true;
+            }
+            const K32::Mapping& map = g_k.mappings[h - MAP_TAG];
+            if (off_lo >= map.size) { m.ret(5, 0); return true; }
+            uint32_t span = map.size - off_lo;
+            if (want && want < span) span = want;
+            uint32_t va = m.alloc(span);
+            if (map.vfs_index >= 0) {
+                const auto& data = g_k.vfs[map.vfs_index].data;
+                uint32_t avail = off_lo < data.size() ? (uint32_t)data.size() - off_lo : 0;
+                uint32_t n = span < avail ? span : avail;
+                if (n) guest_write_bytes(m, va, data.data() + off_lo, n);
+            } // anonymous: m.alloc arena is pre-zeroed
+            m.ret(5, va);
+            return true;
+        }
+        if (name == "UnmapViewOfFile") {
+            m.ret(1, 1); // view copies are immortal in tier 0 (no writeback)
+            return true;
+        }
+        if (name == "GetFullPathNameW") {
+            // Like the A form, but emits UTF-16.
+            std::string full = resolve_path(read_wstr_narrow(m, m.arg(0)));
+            for (auto& c : full) if (c == '/') c = '\\';
+            uint32_t size = m.arg(1), buf = m.arg(2), pFilePart = m.arg(3);
+            uint32_t need = (uint32_t)full.size();
+            if (size < need + 1) { m.ret(4, need + 1); return true; }
+            for (uint32_t i = 0; i < need; i++)
+                guest_write16(m, buf + i * 2, (uint8_t)full[i]);
+            guest_write16(m, buf + need * 2, 0);
+            if (pFilePart) {
+                std::string raw = read_wstr_narrow(m, m.arg(0));
+                if (!raw.empty() && (raw.back() == '\\' || raw.back() == '/'))
+                    m.write32(pFilePart, 0);
+                else {
+                    size_t bs = full.find_last_of('\\');
+                    m.write32(pFilePart,
+                              bs == std::string::npos ? buf : buf + ((uint32_t)bs + 1) * 2);
+                }
+            }
+            m.ret(4, need);
             return true;
         }
 
