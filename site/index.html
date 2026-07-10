@@ -184,6 +184,9 @@
         <div class="item" data-open="zh" style="display:none" id="smPlay"><img class="ig game-ico" src="icons/games.png">C&amp;C Generals: Zero Hour</div>
         <div class="smSep"></div>
         <div class="item" data-open="uninstall" style="display:none" id="smUninstall"><img class="ig" src="icons/trash.png">Uninstall Zero Hour</div>
+        <div class="smSep"></div>
+        <div class="item" data-open="rtw"><img class="ig" src="icons/games.png">Rome: Total War</div>
+        <div class="item" data-open="rtw-setup"><img class="ig" src="icons/cd.png">Install Rome: Total War</div>
         <div class="spacer"></div>
         <div class="smSep"></div>
         <div class="item" id="allPrograms"><img class="ig" src="icons/programs.png">All Programs <span style="margin-left:auto">▸</span>
@@ -191,6 +194,9 @@
             <div class="item" data-open="setup"><img class="ig" src="icons/cd.png">Setup — Zero Hour</div>
             <div class="item" data-open="zh"><img class="ig game-ico" src="icons/games.png">C&amp;C Generals: Zero Hour</div>
             <div class="item" data-open="uninstall"><img class="ig" src="icons/trash.png">Uninstall Zero Hour</div>
+            <div class="smSep"></div>
+            <div class="item" data-open="rtw"><img class="ig" src="icons/games.png">Rome: Total War</div>
+            <div class="item" data-open="rtw-setup"><img class="ig" src="icons/cd.png">Install Rome: Total War</div>
           </div>
         </div>
       </div>
@@ -687,6 +693,10 @@ refreshIdentity();
 const setupIcon = addIcon('setup', '<img src="icons/cd.png" alt="">', 'Install C&C Generals Zero Hour', 24, 24, openSetup);
 setupIcon.id = 'setupIcon';
 addIcon('about', '<img src="icons/doc.png" alt="">', 'About Igroteka', 24, 130, openAbout);
+// Rome: Total War (Fortochka runtime). The play page self-gates on OPFS —
+// double-click runs it, or prompts to install if the files aren't imported yet.
+addIcon('rtw', '<img src="icons/games.png" alt="">', 'Rome: Total War', 24, 236,
+        () => location.href = 'play/rtw/');
 
 async function placeGameIcon() {
   document.getElementById('setupIcon').style.display = 'none';
@@ -796,6 +806,8 @@ startMenu.addEventListener('click', (e) => {
   if (item.dataset.open === 'about') openAbout();
   if (item.dataset.open === 'zh') location.href = 'play/zh/';
   if (item.dataset.open === 'uninstall') openUninstall();
+  if (item.dataset.open === 'rtw') location.href = 'play/rtw/';
+  if (item.dataset.open === 'rtw-setup') location.href = 'play/rtw/import.html';
 });
 
 document.getElementById('footOff').onclick = () => {
