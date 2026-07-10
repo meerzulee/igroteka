@@ -41,6 +41,19 @@ struct K32 {
         uint64_t pos = 0;
     };
     std::vector<OpenFile> open_files;
+    // Current directory (normalized, no trailing slash) and directory-search
+    // handles. FindFirstFile snapshots the matching names; FindNext walks them.
+    std::string cwd = "c:/rtw";
+    struct FindEntry {
+        std::string name; // basename only
+        bool is_dir;
+        uint64_t size;
+    };
+    struct FindState {
+        std::vector<FindEntry> entries;
+        size_t pos = 0;
+    };
+    std::vector<FindState> finds; // handle = FIND_TAG + index
 };
 K32 g_k;
 
@@ -55,6 +68,13 @@ constexpr uint32_t INVALID_HANDLE = 0xFFFFFFFFu;
 constexpr uint32_t MAX_FILE_BYTES = 64u << 20;
 constexpr size_t MAX_FILES = 4096;
 constexpr size_t MAX_OPEN_FILES = 4096;
+// Cap string-conversion element counts so a huge guest-supplied length can't
+// drive a multi-billion-iteration host loop (the HLE runs outside the CPU step
+// budget). No real string exceeds the arena; 64 Mi chars is far above any.
+constexpr uint32_t MAX_CONV_CHARS = 64u << 20;
+// Directory-search handle tag, distinct from FILE_TAG and MODULE_TAG.
+constexpr uint32_t FIND_TAG = 0x60000000u;
+constexpr size_t MAX_FINDS = 4096;
 
 // Normalize a VFS path: lowercase, backslashes → forward slashes.
 std::string norm_path(std::string s) {
@@ -63,6 +83,24 @@ std::string norm_path(std::string s) {
         if (c == '\\') c = '/';
     }
     return s;
+}
+// Strip a trailing '/' (except a lone root) so "data/" and "data" compare equal.
+std::string strip_slash(std::string s) {
+    while (s.size() > 1 && s.back() == '/') s.pop_back();
+    return s;
+}
+// Match a filename against a DOS wildcard pattern (already normalized lowercase).
+// Supports '*' (any run) and '?' (any one char). Iterative backtracking.
+bool glob_match(const std::string& pat, const std::string& name) {
+    size_t p = 0, n = 0, star = std::string::npos, mark = 0;
+    while (n < name.size()) {
+        if (p < pat.size() && (pat[p] == '?' || pat[p] == name[n])) { p++; n++; }
+        else if (p < pat.size() && pat[p] == '*') { star = p++; mark = n; }
+        else if (star != std::string::npos) { p = star + 1; n = ++mark; }
+        else return false;
+    }
+    while (p < pat.size() && pat[p] == '*') p++;
+    return p == pat.size();
 }
 int vfs_find(const std::string& name) {
     std::string n = norm_path(name);
@@ -87,6 +125,97 @@ K32::OpenFile* as_open_file(uint32_t h) {
     if (h < FILE_TAG || (h - FILE_TAG) >= g_k.open_files.size()) return nullptr;
     K32::OpenFile* of = &g_k.open_files[h - FILE_TAG];
     return of->vfs_index >= 0 ? of : nullptr;
+}
+uint32_t guest_write_bytes(Machine& m, uint32_t dst, const uint8_t* src, uint32_t n); // fwd
+
+// Resolve a guest path against the cwd: a drive-qualified ("c:/...") or
+// root-anchored ("/...") path stays as-is; a relative one is joined to the cwd.
+std::string resolve_path(const std::string& raw) {
+    std::string p = norm_path(raw);
+    bool absolute = (p.size() >= 2 && p[1] == ':') || (!p.empty() && p[0] == '/');
+    if (!absolute) p = g_k.cwd + "/" + p;
+    return strip_slash(p);
+}
+// Populate a FindState with the immediate children of the directory named by a
+// wildcard pattern (e.g. "c:/rtw/data/*"): direct file children matching the
+// last-segment glob, plus each distinct first-level subdirectory (synthesized
+// from the flat VFS paths). Bounded by the VFS size.
+void build_find(K32::FindState& fs, const std::string& pattern_raw) {
+    std::string pat = resolve_path(pattern_raw);
+    size_t slash = pat.find_last_of('/');
+    std::string dir = slash == std::string::npos ? std::string() : pat.substr(0, slash);
+    std::string glob = slash == std::string::npos ? pat : pat.substr(slash + 1);
+    std::string prefix = dir + "/";
+    std::vector<std::string> dirs_seen;
+    for (const auto& vf : g_k.vfs) {
+        if (vf.name.size() <= prefix.size() ||
+            vf.name.compare(0, prefix.size(), prefix) != 0)
+            continue;
+        std::string rest = vf.name.substr(prefix.size());
+        size_t sub = rest.find('/');
+        if (sub == std::string::npos) { // a direct file child
+            if (glob_match(glob, rest))
+                fs.entries.push_back({rest, false, vf.data.size()});
+        } else { // a subdirectory child (dedup)
+            std::string d = rest.substr(0, sub);
+            bool seen = false;
+            for (const auto& s : dirs_seen)
+                if (s == d) { seen = true; break; }
+            if (!seen && glob_match(glob, d)) {
+                dirs_seen.push_back(d);
+                fs.entries.push_back({d, true, 0});
+            }
+        }
+    }
+}
+// Fill a WIN32_FIND_DATAA (320 bytes) from a FindEntry. All writes bounds-checked.
+void fill_find_data_a(Machine& m, uint32_t p, const K32::FindEntry& e) {
+    for (uint32_t off = 0; off < 320; off += 4) m.write32(p + off, 0);
+    m.write32(p + 0, e.is_dir ? 0x10 : 0x80); // FILE_ATTRIBUTE_DIRECTORY : NORMAL
+    m.write32(p + 28, (uint32_t)(e.size >> 32)); // nFileSizeHigh
+    m.write32(p + 32, (uint32_t)e.size);         // nFileSizeLow
+    uint32_t n = e.name.size() < 259 ? (uint32_t)e.name.size() : 259;
+    guest_write_bytes(m, p + 44, (const uint8_t*)e.name.data(), n); // cFileName[260]
+}
+
+// Open/create a VFS file per a CreateFile disposition (shared by CreateFileA/W).
+// Path is resolved against the cwd so relative and absolute forms canonicalize
+// to the same VFS key. Returns the guest HANDLE or INVALID_HANDLE.
+uint32_t open_vfs(const std::string& path_raw, uint32_t disp) {
+    std::string path = resolve_path(path_raw);
+    int idx = vfs_find(path);
+    bool exists = idx >= 0;
+    bool open_it = false, create = false, trunc = false;
+    switch (disp) {
+        case 1: /*CREATE_NEW*/        open_it = create = !exists; break;
+        case 2: /*CREATE_ALWAYS*/     open_it = true; create = !exists; trunc = true; break;
+        case 3: /*OPEN_EXISTING*/     open_it = exists; break;
+        case 4: /*OPEN_ALWAYS*/       open_it = true; create = !exists; break;
+        case 5: /*TRUNCATE_EXISTING*/ open_it = trunc = exists; break;
+        default:                      open_it = exists; break;
+    }
+    uint32_t handle = INVALID_HANDLE;
+    if (open_it) {
+        if (create) idx = vfs_create(path);
+        if (idx >= 0) {
+            if (trunc) g_k.vfs[idx].data.clear();
+            handle = open_file_handle(idx);
+        }
+    }
+    if (handle == INVALID_HANDLE) g_k.last_error = 2; // ERROR_FILE_NOT_FOUND
+    return handle;
+}
+// File attributes for a resolved path: NORMAL(0x80) if a file exists, DIRECTORY
+// (0x10) if any VFS entry lives under it, else INVALID_FILE_ATTRIBUTES.
+uint32_t vfs_attrs(const std::string& path_raw) {
+    std::string path = resolve_path(path_raw);
+    if (vfs_find(path) >= 0) return 0x80;
+    std::string prefix = path + "/";
+    for (const auto& vf : g_k.vfs)
+        if (vf.name.size() > prefix.size() &&
+            vf.name.compare(0, prefix.size(), prefix) == 0)
+            return 0x10;
+    return INVALID_HANDLE;
 }
 // Copy `n` bytes from host `src` into guest memory at `dst`, bounds-checked per
 // byte against the arena (like write32) so a bogus dst is a no-op, not a host
@@ -305,35 +434,11 @@ void install(Machine& m) {
         }
         if (name == "CreateFileA") {
             // CreateFileA(name, access, share, sec, disposition, flags, template).
-            // disposition: CREATE_NEW=1, CREATE_ALWAYS=2, OPEN_EXISTING=3,
-            // OPEN_ALWAYS=4, TRUNCATE_EXISTING=5. Returns a handle or
-            // INVALID_HANDLE_VALUE. lpFileName is arg0.
-            std::string path = m.read_cstr(m.arg(0));
-            uint32_t disp = m.arg(4);
-            int idx = vfs_find(path);
-            bool exists = idx >= 0;
-            // Decide the disposition's intent, then open once. Splitting the
-            // "create" step out keeps a cap-hit vfs_create()==-1 from ever
-            // indexing g_k.vfs[-1] (the truncate happens only for a valid idx).
-            bool open_it = false, create = false, trunc = false;
-            switch (disp) {
-                case 1: /*CREATE_NEW*/        open_it = create = !exists; break;
-                case 2: /*CREATE_ALWAYS*/     open_it = true; create = !exists; trunc = true; break;
-                case 3: /*OPEN_EXISTING*/     open_it = exists; break;
-                case 4: /*OPEN_ALWAYS*/       open_it = true; create = !exists; break;
-                case 5: /*TRUNCATE_EXISTING*/ open_it = trunc = exists; break;
-                default:                      open_it = exists; break;
-            }
-            uint32_t handle = INVALID_HANDLE;
-            if (open_it) {
-                if (create) idx = vfs_create(path); // -1 if the file cap is hit
-                if (idx >= 0) {
-                    if (trunc) g_k.vfs[idx].data.clear();
-                    handle = open_file_handle(idx); // INVALID if the handle cap is hit
-                }
-            }
-            if (handle == INVALID_HANDLE) g_k.last_error = 2; // ERROR_FILE_NOT_FOUND
-            m.ret(7, handle);
+            m.ret(7, open_vfs(m.read_cstr(m.arg(0)), m.arg(4)));
+            return true;
+        }
+        if (name == "CreateFileW") {
+            m.ret(7, open_vfs(read_wstr_narrow(m, m.arg(0)), m.arg(4)));
             return true;
         }
         if (name == "ReadFile") {
@@ -393,15 +498,156 @@ void install(Machine& m) {
             return true;
         }
         if (name == "GetFileAttributesA") {
-            // 0x80 FILE_ATTRIBUTE_NORMAL if present, else INVALID_FILE_ATTRIBUTES.
-            std::string path = m.read_cstr(m.arg(0));
-            m.ret(1, vfs_find(path) >= 0 ? 0x80 : INVALID_HANDLE);
+            m.ret(1, vfs_attrs(m.read_cstr(m.arg(0))));
+            return true;
+        }
+        if (name == "GetFileAttributesW") {
+            m.ret(1, vfs_attrs(read_wstr_narrow(m, m.arg(0))));
+            return true;
+        }
+        if (name == "SetFileAttributesA" || name == "SetFileAttributesW") {
+            m.ret(2, 1); // attributes not modeled — accept
+            return true;
+        }
+        if (name == "GetDriveTypeA" || name == "GetDriveTypeW") {
+            m.ret(1, 3); // DRIVE_FIXED
             return true;
         }
         if (name == "CloseHandle") {
             // Free a file handle if that's what this is; other handle kinds
             // (heap, pseudo-handles) just succeed.
             if (K32::OpenFile* of = as_open_file(m.arg(0))) of->vfs_index = -1;
+            m.ret(1, 1);
+            return true;
+        }
+
+        // ---- current directory + full-path resolution ----
+        if (name == "GetCurrentDirectoryA") {
+            // (nBufferLength, lpBuffer). Report the cwd in Windows form (drive +
+            // backslashes). Return length excl. NUL, or the required size incl.
+            // NUL if the buffer is too small.
+            uint32_t size = m.arg(0), buf = m.arg(1);
+            std::string w = g_k.cwd;
+            for (auto& c : w) if (c == '/') c = '\\';
+            uint32_t need = (uint32_t)w.size();
+            if (size < need + 1) { m.ret(2, need + 1); return true; }
+            guest_write_bytes(m, buf, (const uint8_t*)w.data(), need);
+            uint8_t z = 0; guest_write_bytes(m, buf + need, &z, 1);
+            m.ret(2, need);
+            return true;
+        }
+        if (name == "SetCurrentDirectoryA") {
+            g_k.cwd = resolve_path(m.read_cstr(m.arg(0)));
+            m.ret(1, 1);
+            return true;
+        }
+        if (name == "SetCurrentDirectoryW") {
+            g_k.cwd = resolve_path(read_wstr_narrow(m, m.arg(0)));
+            m.ret(1, 1);
+            return true;
+        }
+        if (name == "GetCurrentDirectoryW") {
+            uint32_t size = m.arg(0), buf = m.arg(1);
+            std::string w = g_k.cwd;
+            for (auto& c : w) if (c == '/') c = '\\';
+            uint32_t need = (uint32_t)w.size();
+            if (size < need + 1) { m.ret(2, need + 1); return true; }
+            for (uint32_t i = 0; i < need; i++) guest_write16(m, buf + i * 2, (uint8_t)w[i]);
+            guest_write16(m, buf + need * 2, 0);
+            m.ret(2, need);
+            return true;
+        }
+        if (name == "GetFullPathNameA") {
+            // (lpFileName, nBufferLength, lpBuffer, lpFilePart). Resolve against
+            // the cwd, emit Windows form, and point lpFilePart at the basename.
+            std::string full = resolve_path(m.read_cstr(m.arg(0)));
+            for (auto& c : full) if (c == '/') c = '\\';
+            uint32_t size = m.arg(1), buf = m.arg(2), pFilePart = m.arg(3);
+            uint32_t need = (uint32_t)full.size();
+            if (size < need + 1) { m.ret(4, need + 1); return true; }
+            guest_write_bytes(m, buf, (const uint8_t*)full.data(), need);
+            uint8_t z = 0; guest_write_bytes(m, buf + need, &z, 1);
+            if (pFilePart) {
+                size_t bs = full.find_last_of('\\');
+                m.write32(pFilePart, bs == std::string::npos ? buf : buf + (uint32_t)bs + 1);
+            }
+            m.ret(4, need);
+            return true;
+        }
+
+        // ---- directory enumeration over the VFS ----
+        if (name == "FindFirstFileA" || name == "FindFirstFileW") {
+            bool w = name == "FindFirstFileW";
+            std::string pat = w ? read_wstr_narrow(m, m.arg(0)) : m.read_cstr(m.arg(0));
+            if (g_k.finds.size() >= MAX_FINDS) { m.ret(2, INVALID_HANDLE); return true; }
+            K32::FindState fs;
+            build_find(fs, pat);
+            if (fs.entries.empty()) {
+                g_k.last_error = 2; // ERROR_FILE_NOT_FOUND
+                m.ret(2, INVALID_HANDLE);
+                return true;
+            }
+            fill_find_data_a(m, m.arg(1), fs.entries[0]);
+            fs.pos = 1;
+            g_k.finds.push_back(std::move(fs));
+            m.ret(2, FIND_TAG + (uint32_t)(g_k.finds.size() - 1));
+            return true;
+        }
+        if (name == "FindNextFileA" || name == "FindNextFileW") {
+            uint32_t h = m.arg(0);
+            if (h < FIND_TAG || (h - FIND_TAG) >= g_k.finds.size()) { m.ret(2, 0); return true; }
+            K32::FindState& fs = g_k.finds[h - FIND_TAG];
+            if (fs.pos >= fs.entries.size()) {
+                g_k.last_error = 18; // ERROR_NO_MORE_FILES
+                m.ret(2, 0);
+                return true;
+            }
+            fill_find_data_a(m, m.arg(1), fs.entries[fs.pos++]);
+            m.ret(2, 1);
+            return true;
+        }
+        if (name == "FindClose") {
+            uint32_t h = m.arg(0);
+            if (h >= FIND_TAG && (h - FIND_TAG) < g_k.finds.size())
+                g_k.finds[h - FIND_TAG].entries.clear();
+            m.ret(1, 1);
+            return true;
+        }
+
+        // ---- file / directory mutation ----
+        if (name == "CreateDirectoryA" || name == "CreateDirectoryW") {
+            m.ret(2, 1); // directories are implicit in the flat VFS
+            return true;
+        }
+        if (name == "RemoveDirectoryA" || name == "RemoveDirectoryW") {
+            m.ret(1, 1);
+            return true;
+        }
+        if (name == "DeleteFileA" || name == "DeleteFileW") {
+            bool w = name == "DeleteFileW";
+            std::string path = resolve_path(w ? read_wstr_narrow(m, m.arg(0))
+                                              : m.read_cstr(m.arg(0)));
+            int idx = vfs_find(path);
+            if (idx >= 0) { g_k.vfs[idx].name.clear(); g_k.vfs[idx].data.clear(); } // tombstone
+            m.ret(1, idx >= 0 ? 1 : 0);
+            return true;
+        }
+        if (name == "MoveFileA" || name == "MoveFileW") {
+            bool w = name == "MoveFileW";
+            std::string from = resolve_path(w ? read_wstr_narrow(m, m.arg(0))
+                                              : m.read_cstr(m.arg(0)));
+            std::string to = resolve_path(w ? read_wstr_narrow(m, m.arg(1))
+                                            : m.read_cstr(m.arg(1)));
+            int idx = vfs_find(from);
+            if (idx >= 0 && vfs_find(to) < 0) { g_k.vfs[idx].name = to; m.ret(2, 1); }
+            else m.ret(2, 0);
+            return true;
+        }
+        if (name == "FlushFileBuffers") { m.ret(1, 1); return true; }
+        if (name == "SetEndOfFile") {
+            // Truncate the file to the current position.
+            if (K32::OpenFile* of = as_open_file(m.arg(0)))
+                g_k.vfs[of->vfs_index].data.resize((size_t)of->pos, 0);
             m.ret(1, 1);
             return true;
         }
@@ -636,8 +882,9 @@ void install(Machine& m) {
             int32_t wlen = (int32_t)m.arg(3);
             uint32_t mbstr = m.arg(4), mblen = m.arg(5);
             uint32_t n = 0; // source wchar count
-            if (wlen < 0) { while (m.read32(wstr + n * 2) & 0xFFFF) n++; n++; }
+            if (wlen < 0) { while (n < MAX_CONV_CHARS && (m.read32(wstr + n * 2) & 0xFFFF)) n++; n++; }
             else n = (uint32_t)wlen;
+            if (n > MAX_CONV_CHARS) n = MAX_CONV_CHARS; // bound the host loop
             if (mblen == 0) { m.ret(8, n); return true; } // query length
             uint32_t out = n < mblen ? n : mblen;
             for (uint32_t i = 0; i < out; i++) {
@@ -654,8 +901,9 @@ void install(Machine& m) {
             int32_t mblen = (int32_t)m.arg(3);
             uint32_t wstr = m.arg(4), wlen = m.arg(5);
             uint32_t n = 0;
-            if (mblen < 0) { while (m.read32(mbstr + n) & 0xFF) n++; n++; }
+            if (mblen < 0) { while (n < MAX_CONV_CHARS && (m.read32(mbstr + n) & 0xFF)) n++; n++; }
             else n = (uint32_t)mblen;
+            if (n > MAX_CONV_CHARS) n = MAX_CONV_CHARS;
             if (wlen == 0) { m.ret(6, n); return true; }
             uint32_t out = n < wlen ? n : wlen;
             for (uint32_t i = 0; i < out; i++)
@@ -672,8 +920,9 @@ void install(Machine& m) {
             uint32_t out = m.arg(w ? 3 : 4);
             uint32_t step = w ? 2 : 1;
             uint32_t n = 0;
-            if (cch < 0) { while (m.read32(src + n * step) & (w ? 0xFFFF : 0xFF)) n++; n++; }
+            if (cch < 0) { while (n < MAX_CONV_CHARS && (m.read32(src + n * step) & (w ? 0xFFFF : 0xFF))) n++; n++; }
             else n = (uint32_t)cch;
+            if (n > MAX_CONV_CHARS) n = MAX_CONV_CHARS;
             for (uint32_t i = 0; i < n; i++) {
                 uint32_t c = m.read32(src + i * step) & (w ? 0xFFFF : 0xFF);
                 uint16_t t = 0;
@@ -696,8 +945,9 @@ void install(Machine& m) {
             uint32_t dst = m.arg(4), dstlen = m.arg(5);
             uint32_t step = w ? 2 : 1, mask = w ? 0xFFFF : 0xFF;
             uint32_t n = 0;
-            if (srclen < 0) { while (m.read32(src + n * step) & mask) n++; n++; }
+            if (srclen < 0) { while (n < MAX_CONV_CHARS && (m.read32(src + n * step) & mask)) n++; n++; }
             else n = (uint32_t)srclen;
+            if (n > MAX_CONV_CHARS) n = MAX_CONV_CHARS;
             if (dstlen == 0) { m.ret(6, n); return true; } // query length
             uint32_t out = n < dstlen ? n : dstlen;
             for (uint32_t i = 0; i < out; i++) {
