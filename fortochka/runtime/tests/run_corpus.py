@@ -48,6 +48,7 @@ CASES = [
     ("pump.exe", "zhrun", [], 42, None),  # pump adjuncts + winmm timing + GetDeviceCaps (batch 4)
     ("crt2.exe", "zhrun", [], 42, None),  # CRT tail: CompareString, MulDiv, time family, file mapping (batch 5)
     ("sysinit.exe", "zhrun", [], 42, None),  # init-gate stubs: ole32, wsock32 byteorder, d3d8 decline (batch 6)
+    ("threads.exe", "zhrun", [], 42, None),  # cooperative scheduler: event handoff, exit codes, busy-wait preemption, mutex
 ]
 
 

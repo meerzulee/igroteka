@@ -873,13 +873,14 @@ void install(Machine& m) {
             return true;
         }
         if (name == "TlsGetValue") {
+            // Values are PER-THREAD (Machine); the alloc bitmap stays global.
             uint32_t i = m.arg(0);
-            m.ret(1, i < 64 ? g_k.tls[i] : 0);
+            m.ret(1, i < 64 ? m.tls_get(i) : 0);
             return true;
         }
         if (name == "TlsSetValue") {
             uint32_t i = m.arg(0);
-            if (i < 64) g_k.tls[i] = m.arg(1);
+            if (i < 64) m.tls_set(i, m.arg(1));
             m.ret(2, 1);
             return true;
         }
@@ -896,15 +897,15 @@ void install(Machine& m) {
             return true;
         }
 
-        // ---- timing (deterministic: derived from retired instruction count) ----
+        // ---- timing (deterministic: the shared retired-instruction clock) ----
         if (name == "GetTickCount") {
-            m.ret(0, (uint32_t)(m.cpu().icount / 1000)); // ~1 tick per 1k insns
+            m.ret(0, (uint32_t)(m.proc_ticks() / 1000)); // ~1 tick per 1k insns
             return true;
         }
         if (name == "QueryPerformanceCounter") {
             uint32_t p = m.arg(0);
-            m.write32(p, (uint32_t)m.cpu().icount);
-            m.write32(p + 4, (uint32_t)(m.cpu().icount >> 32));
+            m.write32(p, (uint32_t)m.proc_ticks());
+            m.write32(p + 4, (uint32_t)(m.proc_ticks() >> 32));
             m.ret(1, 1);
             return true;
         }
@@ -922,7 +923,77 @@ void install(Machine& m) {
             m.ret(1, 0);
             return true;
         }
-        if (name == "Sleep") { m.ret(1, 0); return true; }
+        if (name == "Sleep") {
+            // No-op yield: preemptive slicing already lets other threads run, so
+            // a spin-Sleep loop makes progress without parking (and this stays
+            // safe to call from inside a reverse thunk, unlike a real wait).
+            m.ret(1, 0);
+            return true;
+        }
+
+        // ---- threads + synchronization (the cooperative scheduler) ----
+        if (name == "CreateThread") {
+            // (lpThreadAttributes, dwStackSize, lpStartAddress, lpParameter,
+            //  dwCreationFlags, lpThreadId). CREATE_SUSPENDED = 0x4.
+            uint32_t entry = m.arg(2), param = m.arg(3), flags = m.arg(4),
+                     pTid = m.arg(5);
+            uint32_t h = m.create_thread(entry, param, flags & 0x4);
+            if (pTid) m.write32(pTid, h); // thread id token = the handle
+            m.ret(6, h);
+            return true;
+        }
+        if (name == "ResumeThread") { m.ret(1, m.resume_thread(m.arg(0))); return true; }
+        if (name == "SuspendThread") { m.ret(1, m.suspend_thread(m.arg(0))); return true; }
+        if (name == "SetThreadPriority") { m.ret(2, 1); return true; }
+        if (name == "GetThreadPriority") { m.ret(1, 0); return true; } // NORMAL
+        if (name == "GetExitCodeThread") {
+            uint32_t code = 0x103; // STILL_ACTIVE
+            m.thread_exit_code(m.arg(0), code);
+            if (m.arg(1)) m.write32(m.arg(1), code);
+            m.ret(2, 1);
+            return true;
+        }
+        if (name == "CreateEventA" || name == "CreateEventW") {
+            // (lpEventAttributes, bManualReset, bInitialState, lpName).
+            m.ret(4, m.create_event(m.arg(1) != 0, m.arg(2) != 0));
+            return true;
+        }
+        if (name == "SetEvent") { m.set_event(m.arg(0)); m.ret(1, 1); return true; }
+        if (name == "ResetEvent") { m.reset_event(m.arg(0)); m.ret(1, 1); return true; }
+        if (name == "PulseEvent") { // signal, wake waiters, then clear
+            m.set_event(m.arg(0));
+            m.reset_event(m.arg(0));
+            m.ret(1, 1);
+            return true;
+        }
+        if (name == "CreateMutexA" || name == "CreateMutexW") {
+            // (lpMutexAttributes, bInitialOwner, lpName).
+            m.ret(3, m.create_mutex(m.arg(1) != 0));
+            return true;
+        }
+        if (name == "ReleaseMutex") { m.ret(1, m.release_mutex(m.arg(0)) ? 1 : 0); return true; }
+        if (name == "WaitForSingleObject") {
+            // (hHandle, dwMilliseconds). Parks the thread; the SCHEDULER writes
+            // the ret when the object signals or the timeout elapses — do NOT
+            // call m.ret here.
+            m.begin_wait({m.arg(0)}, false, m.arg(1), 2);
+            return true;
+        }
+        if (name == "WaitForMultipleObjects") {
+            // (nCount, lpHandles, bWaitAll, dwMilliseconds).
+            uint32_t n = m.arg(0), ph = m.arg(1);
+            if (n > 64) n = 64; // MAXIMUM_WAIT_OBJECTS
+            std::vector<uint32_t> handles;
+            for (uint32_t i = 0; i < n; i++) handles.push_back(m.read32(ph + i * 4));
+            m.begin_wait(handles, m.arg(2) != 0, m.arg(3), 4);
+            return true;
+        }
+        if (name == "RtlUnwind") {
+            // SEH collapse-unwind: the happy boot path never unwinds. Return so
+            // the caller continues; a real unwind lands with the __except work.
+            m.ret(4, 0);
+            return true;
+        }
 
         // ---- module / process info ----
         if (name == "GetModuleHandleA") {
@@ -1400,10 +1471,11 @@ void install(Machine& m) {
             m.ret(0, g_k.cmdline);
             return true;
         }
-        if (name == "GetCurrentThreadId" || name == "GetCurrentProcessId") {
-            m.ret(0, 1);
+        if (name == "GetCurrentThreadId") {
+            m.ret(0, m.current_tid() + 1); // distinct nonzero id per thread
             return true;
         }
+        if (name == "GetCurrentProcessId") { m.ret(0, 1); return true; }
         if (name == "GetCurrentProcess") { m.ret(0, 0xFFFFFFFFu); return true; }
         if (name == "GetCurrentThread") { m.ret(0, 0xFFFFFFFEu); return true; } // (HANDLE)-2
         if (name == "GetVersion") {

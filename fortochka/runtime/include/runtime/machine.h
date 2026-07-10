@@ -60,6 +60,39 @@ class Machine {
     void write32(uint32_t va, uint32_t v);
     std::string read_cstr(uint32_t va, uint32_t max = 4096) const;
 
+    // --- cooperative thread scheduler (kernel32 threads/sync map onto this) ---
+    // A shared retired-instruction clock, used by the timing HLE so time is one
+    // monotonic count across all threads (not a per-CPU snapshot).
+    uint64_t proc_ticks() const { return proc_icount_; }
+    uint32_t current_tid() const { return cur_tid_; } // 0 = main thread
+    // Per-thread TLS slot storage (the alloc bitmap stays global in k32web; the
+    // VALUES are per-thread here). i must be < 64.
+    uint32_t tls_get(unsigned i) const;
+    void tls_set(unsigned i, uint32_t v);
+
+    // Spawn a guest thread starting at `entry(param)` on a fresh stack + TEB.
+    // Returns a thread HANDLE (waitable). CREATE_SUSPENDED starts it suspended.
+    uint32_t create_thread(uint32_t entry, uint32_t param, bool suspended);
+    uint32_t resume_thread(uint32_t handle);  // → previous suspend count
+    uint32_t suspend_thread(uint32_t handle); // → previous suspend count
+    bool thread_exit_code(uint32_t handle, uint32_t& code) const; // false if unknown
+
+    // Waitable kernel objects. Events: manual/auto reset. Mutexes: recursive
+    // ownership by the calling thread. Handles are waitable via begin_wait.
+    uint32_t create_event(bool manual_reset, bool signaled);
+    uint32_t create_mutex(bool initial_owner);
+    void set_event(uint32_t handle);
+    void reset_event(uint32_t handle);
+    bool release_mutex(uint32_t handle);
+
+    // Block the CURRENT thread on `handles` (WaitForSingle/MultipleObjects). The
+    // handler must NOT call ret() after this — the scheduler completes the wait
+    // (writing `nargs`-frame ret with WAIT_OBJECT_0+i / WAIT_TIMEOUT / etc.) when
+    // an object signals or the timeout (ms, 0xFFFFFFFF = INFINITE) elapses.
+    // Illegal (throws) inside a reverse thunk (reentry_depth_ != 0).
+    void begin_wait(const std::vector<uint32_t>& handles, bool wait_all,
+                    uint32_t timeout_ms, unsigned nargs);
+
     // Resolve a runtime GetProcAddress request to a callable guest address, or 0
     // if unresolved. Matches by name against the static import table: those
     // slots are already IAT-patched to a hostcall thunk and known to be served
@@ -117,6 +150,51 @@ class Machine {
     uint32_t drive(uint32_t sentinel_slot, uint64_t step_budget);
     uint32_t hostcall_addr(uint32_t slot) const;
     void dispatch_import(uint32_t slot);
+
+    // --- scheduler internals ---
+    // A guest thread: its saved CPU, stack/TEB regions, run state, and (when
+    // Blocked) the parked wait it will resume from. Thread 0 is the main thread.
+    struct SchedThread {
+        zhelezo::Cpu cpu;
+        uint32_t stack_base = 0, teb = 0;
+        enum St { Ready, Blocked, Done } st = Ready;
+        uint32_t exit_code = 0;
+        uint32_t suspend = 0;   // CREATE_SUSPENDED / SuspendThread count
+        uint32_t tls[64] = {};  // per-thread TLS values
+        // Parked wait (valid while st == Blocked): the objects, mode, deadline
+        // (in proc_icount ticks; ~UINT64_MAX = INFINITE), and the stdcall frame
+        // width to unwind when the scheduler completes the wait.
+        std::vector<uint32_t> wait_handles;
+        bool wait_all = false;
+        uint64_t wait_deadline = 0;
+        unsigned wait_nargs = 0;
+    };
+    // A waitable kernel object (event or mutex).
+    struct Waitable {
+        bool is_mutex = false;
+        bool manual = false;   // event: manual-reset vs auto-reset
+        bool signaled = false; // event signaled state
+        uint32_t owner = 0;    // mutex owner tid + 1 (0 = free)
+        uint32_t recursion = 0;
+    };
+    // The cooperative scheduler: round-robin Ready threads, each a bounded slice,
+    // completing parked waits between slices, until the process exits. Replaces
+    // the top-level drive() in run_entry. NON-RECURSIVE (asserts !sched_active_).
+    enum class Slice { Returned, Blocked, Sliced, Exited };
+    int scheduler_run(uint64_t slice_steps);
+    Slice drive_slice(uint32_t sentinel_slot, uint64_t slice_steps);
+    bool wait_satisfied(SchedThread& t, uint32_t& which); // which = result on success
+    Waitable* waitable(uint32_t handle);
+    int thread_index(uint32_t handle) const; // thread handle → threads_ index, or -1
+
+    static constexpr uint32_t THREAD_HANDLE_BASE = 0x30000000u;
+    static constexpr uint32_t WAIT_HANDLE_BASE = 0x38000000u;
+    std::vector<SchedThread> threads_;
+    std::vector<Waitable> waitables_;
+    uint32_t cur_tid_ = 0;      // index into threads_ of the running thread
+    uint64_t proc_icount_ = 0;  // shared retired-instruction clock
+    bool sched_active_ = false; // guards against a recursive pump
+    bool yield_blocked_ = false; // a wait handler parked the current thread
 
     // Reverse-thunk nesting cap. Legit SendMessage chains are a few dozen deep;
     // this bounds host C++ recursion so a runaway guest errors instead of
