@@ -106,7 +106,7 @@ static int run_paint(std::vector<uint8_t>& exe, const char* ppm_out) {
 // --corner HEX asserts the top-left pixel (clear color); --tri asserts the
 // center pixel differs from the corner (geometry was drawn over the clear).
 static int run_d3d(std::vector<uint8_t>& exe, const char* ppm_out,
-                   long corner, bool tri) {
+                   long corner, bool tri, long expect_center) {
     Machine m(64u << 20);
     m.load(exe.data(), exe.size());
     k32web::install(m);
@@ -143,6 +143,10 @@ static int run_d3d(std::vector<uint8_t>& exe, const char* ppm_out,
     bool ok = true;
     if (corner >= 0 && px0 != (uint32_t)corner) ok = false;
     if (tri && center == px0) ok = false; // triangle must cover the center
+    if (expect_center >= 0 && center != (uint32_t)expect_center) {
+        ok = false; // exact center color (depth/cull/blend outcome)
+        fprintf(stderr, "FAIL: center=%06x want=%06lx\n", center, expect_center);
+    }
     printf("%s D3D9 frame — COM path reached the backbuffer\n",
            ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
@@ -150,7 +154,7 @@ static int run_d3d(std::vector<uint8_t>& exe, const char* ppm_out,
 
 int main(int argc, char** argv) {
     bool recurse = false, paint = false, d3d = false, tri = false;
-    long corner = -1;
+    long corner = -1, expect_center = -1;
     const char* paint_out = nullptr;
     const char* path = nullptr;
     for (int i = 1; i < argc; i++) {
@@ -159,6 +163,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--d3d")) d3d = true;
         else if (!strcmp(argv[i], "--tri")) tri = true;
         else if (!strcmp(argv[i], "--corner") && i + 1 < argc) corner = strtol(argv[++i], nullptr, 16);
+        else if (!strcmp(argv[i], "--expect-center") && i + 1 < argc) expect_center = strtol(argv[++i], nullptr, 16);
         else if (!strcmp(argv[i], "--ppm") && i + 1 < argc) paint_out = argv[++i];
         else path = argv[i];
     }
@@ -170,7 +175,7 @@ int main(int argc, char** argv) {
 
     if (recurse) return run_recurse_guard(exe);
     if (paint) return run_paint(exe, paint_out);
-    if (d3d) return run_d3d(exe, paint_out, corner, tri);
+    if (d3d) return run_d3d(exe, paint_out, corner, tri, expect_center);
 
     Machine m(64u << 20);
     try {

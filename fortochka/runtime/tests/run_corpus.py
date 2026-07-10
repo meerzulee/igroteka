@@ -35,6 +35,9 @@ CASES = [
     ("tex.exe", "window_test", ["--d3d", "--tri"], 0, "reached the backbuffer"),  # textured quad
     ("itri.exe", "window_test", ["--d3d", "--tri"], 0, "reached the backbuffer"),  # indexed draw
     ("tex_evil.exe", "window_test", ["--d3d", "--tri"], 0, "reached the backbuffer"),  # huge UV, no UB
+    # depth test + z-write: near-blue drawn first, far-red drawn after must be
+    # depth-rejected, so the center stays blue (0000ff), not red.
+    ("rstest.exe", "window_test", ["--d3d", "--expect-center", "0000ff"], 0, "reached the backbuffer"),
 ]
 
 

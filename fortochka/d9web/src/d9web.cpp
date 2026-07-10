@@ -46,8 +46,10 @@ inline void mat_mul(const float* a, const float* b, float* out) {
 struct State {
     uint32_t width = 640, height = 480;
     std::vector<uint32_t> backbuffer; // ARGB 0xFFRRGGBB, width*height
+    std::vector<float> zbuffer;       // depth, width*height, 1.0 = far
     bool presented = false;
     uint32_t fvf = 0; // current SetFVF
+    uint32_t rs[256] = {}; // render states (SetRenderState), indexed by state #
     // Bound stream 0 (SetStreamSource) + index buffer (SetIndices): the COM
     // objects, byte offset into the stream, and vertex stride.
     uint32_t stream_vb = 0, stream_offset = 0, stream_stride = 0, stream_ib = 0;
@@ -64,11 +66,31 @@ struct State {
         mat_identity(proj);
     }
     void ensure_bb() {
-        if (backbuffer.size() != (size_t)width * height)
-            backbuffer.assign((size_t)width * height, 0xFF000000u);
+        size_t n = (size_t)width * height;
+        if (backbuffer.size() != n) backbuffer.assign(n, 0xFF000000u);
+        if (zbuffer.size() != n) zbuffer.assign(n, 1.0f);
     }
 };
 State g_state;
+
+// Render-state indices (D3DRENDERSTATETYPE) and enum values we act on.
+constexpr uint32_t RS_ZENABLE = 7, RS_ZWRITEENABLE = 14, RS_ALPHABLENDENABLE = 27,
+                   RS_SRCBLEND = 19, RS_DESTBLEND = 20, RS_CULLMODE = 22;
+constexpr uint32_t CULL_NONE = 1, CULL_CW = 2, CULL_CCW = 3;
+constexpr uint32_t BLEND_SRCALPHA = 5, BLEND_INVSRCALPHA = 6;
+
+// Seed the render-state array with the D3D9 defaults we act on, so the raster
+// path can read them directly without a "0 means default" ambiguity (a guest
+// value of 0 is a real choice, e.g. ZWRITEENABLE=FALSE). Everything not seeded
+// stays 0, which is the D3D default for the states we don't yet honour.
+void seed_render_states(uint32_t rs[256]) {
+    rs[RS_ZENABLE] = 0;          // D3DZB_FALSE — depth off until the guest asks
+    rs[RS_ZWRITEENABLE] = 1;     // TRUE — write depth on a passing test
+    rs[RS_CULLMODE] = CULL_CCW;  // D3DCULL_CCW is the D3D default
+    rs[RS_ALPHABLENDENABLE] = 0; // opaque by default
+    rs[RS_SRCBLEND] = BLEND_SRCALPHA;
+    rs[RS_DESTBLEND] = BLEND_INVSRCALPHA;
+}
 
 // Vertex-buffer object state (past the vtable ptr at +0): refcount, the backing
 // store's guest VA, and its length in bytes. Index buffers reuse this layout
@@ -76,13 +98,14 @@ State g_state;
 constexpr uint32_t VB_REFCOUNT = 4, VB_BACKING = 8, VB_LENGTH = 12, IB_FORMAT = 16;
 constexpr uint32_t VB_STATE_BYTES = 12, IB_STATE_BYTES = 16;
 
-// Read a guest float (IEEE-754 bits).
-inline float read_f32(Machine& m, uint32_t va) {
-    uint32_t u = m.read32(va);
+// Reinterpret a 32-bit value as an IEEE-754 float (a float passed by value).
+inline float read_f32_bits(uint32_t u) {
     float f;
     std::memcpy(&f, &u, 4);
     return f;
 }
+// Read a guest float from memory.
+inline float read_f32(Machine& m, uint32_t va) { return read_f32_bits(m.read32(va)); }
 
 // A vtable slot: the API name (for diagnostics + as the scope document),
 // the stdcall dword count including `this` (so ret() pops correctly), and the
@@ -122,9 +145,14 @@ void dev_clear(Machine& m, const Method& mm) {
     if (m.arg(1) != 0) throw MachineError{"IDirect3DDevice9::Clear with rects unimplemented"};
     State& s = g_state;
     s.ensure_bb();
-    if (m.arg(3) & 1 /*D3DCLEAR_TARGET*/) {
+    uint32_t flags = m.arg(3);
+    if (flags & 1 /*D3DCLEAR_TARGET*/) {
         uint32_t argb = d3dcolor_to_argb(m.arg(4));
         for (auto& px : s.backbuffer) px = argb;
+    }
+    if (flags & 2 /*D3DCLEAR_ZBUFFER*/) {
+        float z = read_f32_bits(m.arg(5)); // Z clear value (default 1.0)
+        for (auto& d : s.zbuffer) d = z;
     }
     m.ret(mm.nargs, 0);
 }
@@ -134,6 +162,11 @@ void dev_present(Machine& m, const Method& mm) {
 }
 void dev_set_fvf(Machine& m, const Method& mm) {
     g_state.fvf = m.arg(1); // state-tracker input; consumed by the draw path
+    m.ret(mm.nargs, 0);
+}
+void dev_set_render_state(Machine& m, const Method& mm) {
+    uint32_t state = m.arg(1); // SetRenderState(this, State, Value)
+    if (state < 256) g_state.rs[state] = m.arg(2);
     m.ret(mm.nargs, 0);
 }
 void dev_set_transform(Machine& m, const Method& mm) {
@@ -157,9 +190,9 @@ void dev_set_viewport(Machine& m, const Method& mm) {
     m.ret(mm.nargs, 0);
 }
 
-// One screen-space vertex: position, Gouraud color, and texture coords.
+// One screen-space vertex: position, depth, Gouraud color, and texture coords.
 struct Vtx {
-    float x, y;
+    float x, y, z;  // z in [0,1] for depth testing
     uint32_t color; // D3DCOLOR 0xAARRGGBB
     float u, v;
 };
@@ -194,8 +227,18 @@ uint64_t raster_triangle(Machine& m, State& s, uint32_t tex, const Vtx& a,
         return 0;
     float area = edge(a.x, a.y, b.x, b.y, c.x, c.y);
     if (area == 0) return 0;
+    // Backface culling by winding sign (CULL_NONE draws both). In this y-down
+    // screen space with the edge() convention, a front-facing
+    // (clockwise-on-screen) triangle has area < 0, so D3DCULL_CCW culls area > 0.
+    switch (s.rs[RS_CULLMODE]) {
+        case CULL_CW:   if (area < 0) return 0; break;
+        case CULL_CCW:  if (area > 0) return 0; break;
+        case CULL_NONE: default: break; // draw both faces
+    }
     float inv = 1.0f / area; // sign handles either winding
     if (!std::isfinite(inv)) return 0; // near-degenerate: weights would be NaN
+    const bool depth = s.rs[RS_ZENABLE] && !s.zbuffer.empty();
+    const bool blend = s.rs[RS_ALPHABLENDENABLE];
     auto clampf = [](float v, float hi) { return std::clamp(v, 0.0f, hi); };
     int minx = (int)clampf(std::min({a.x, b.x, c.x}), (float)(s.width - 1));
     int maxx = (int)clampf(std::max({a.x, b.x, c.x}), (float)(s.width - 1));
@@ -208,13 +251,19 @@ uint64_t raster_triangle(Machine& m, State& s, uint32_t tex, const Vtx& a,
             float w1 = edge(c.x, c.y, a.x, a.y, px, py) * inv;
             float w2 = edge(a.x, a.y, b.x, b.y, px, py) * inv;
             if (w0 < 0 || w1 < 0 || w2 < 0) continue; // outside
+            size_t idx = (size_t)y * s.width + x;
+            if (depth) { // D3DCMP_LESSEQUAL against the z-buffer
+                float z = w0 * a.z + w1 * b.z + w2 * c.z;
+                if (!std::isfinite(z) || z > s.zbuffer[idx]) continue;
+                if (s.rs[RS_ZWRITEENABLE]) s.zbuffer[idx] = z;
+            }
             auto chan = [&](int sh) {
                 float v = w0 * ((a.color >> sh) & 0xFF) +
                           w1 * ((b.color >> sh) & 0xFF) +
                           w2 * ((c.color >> sh) & 0xFF);
                 return (uint32_t)(v < 0 ? 0 : v > 255 ? 255 : v);
             };
-            uint32_t r = chan(16), g = chan(8), bl = chan(0);
+            uint32_t r = chan(16), g = chan(8), bl = chan(0), sa = chan(24);
             if (tex) { // MODULATE: texel * diffuse (D3D default stage op)
                 float tu = w0 * a.u + w1 * b.u + w2 * c.u;
                 float tv = w0 * a.v + w1 * b.v + w2 * c.v;
@@ -222,9 +271,17 @@ uint64_t raster_triangle(Machine& m, State& s, uint32_t tex, const Vtx& a,
                 r = r * ((t >> 16) & 0xFF) / 255;
                 g = g * ((t >> 8) & 0xFF) / 255;
                 bl = bl * (t & 0xFF) / 255;
+                sa = sa * ((t >> 24) & 0xFF) / 255;
             }
-            s.backbuffer[(size_t)y * s.width + x] =
-                0xFF000000u | (r << 16) | (g << 8) | bl;
+            if (blend && s.rs[RS_SRCBLEND] == BLEND_SRCALPHA &&
+                s.rs[RS_DESTBLEND] == BLEND_INVSRCALPHA) {
+                // The common src-over: out = src*a + dst*(1-a).
+                uint32_t d = s.backbuffer[idx];
+                r = (r * sa + ((d >> 16) & 0xFF) * (255 - sa)) / 255;
+                g = (g * sa + ((d >> 8) & 0xFF) * (255 - sa)) / 255;
+                bl = (bl * sa + (d & 0xFF) * (255 - sa)) / 255;
+            }
+            s.backbuffer[idx] = 0xFF000000u | (r << 16) | (g << 8) | bl;
         }
     }
     return (uint64_t)(maxx - minx + 1) * (maxy - miny + 1);
@@ -251,8 +308,8 @@ Vtx vertex_screen(Machine& m, uint32_t p, const float* wvp) {
         u = read_f32(m, p + uv_off);
         vv = read_f32(m, p + uv_off + 4);
     }
-    if (fvf & FVF_XYZRHW) // pre-transformed: x,y already in pixels
-        return {read_f32(m, p + 0), read_f32(m, p + 4), col, u, vv};
+    if (fvf & FVF_XYZRHW) // pre-transformed: x,y in pixels, z already in [0,1]
+        return {read_f32(m, p + 0), read_f32(m, p + 4), read_f32(m, p + 8), col, u, vv};
     // Untransformed XYZ: clip = [x,y,z,1] * wvp, then divide + viewport.
     float in[4] = {read_f32(m, p + 0), read_f32(m, p + 4), read_f32(m, p + 8), 1.0f};
     float clip[4];
@@ -262,7 +319,7 @@ Vtx vertex_screen(Machine& m, uint32_t p, const float* wvp) {
     float w = clip[3] == 0.0f ? 1e-6f : clip[3];
     float sx = (clip[0] / w * 0.5f + 0.5f) * g_state.vp_w + g_state.vp_x;
     float sy = (0.5f - clip[1] / w * 0.5f) * g_state.vp_h + g_state.vp_y; // y flips
-    return {sx, sy, col, u, vv};
+    return {sx, sy, clip[2] / w, col, u, vv}; // z in [0,1] (D3D projection)
 }
 
 // Rasterize `count` triangles. `vaddr(j)` returns the guest address of the j-th
@@ -455,7 +512,7 @@ constexpr Method kDeviceVtbl[] = {
     {"GetMaterial", 0, nullptr}, {"SetLight", 0, nullptr},
     {"GetLight", 0, nullptr}, {"LightEnable", 0, nullptr},
     {"GetLightEnable", 0, nullptr}, {"SetClipPlane", 0, nullptr},
-    {"GetClipPlane", 0, nullptr}, {"SetRenderState", 3, ret_ok},
+    {"GetClipPlane", 0, nullptr}, {"SetRenderState", 3, dev_set_render_state},
     {"GetRenderState", 0, nullptr}, {"CreateStateBlock", 0, nullptr},
     {"BeginStateBlock", 0, nullptr}, {"EndStateBlock", 0, nullptr},
     {"SetClipStatus", 0, nullptr}, {"GetClipStatus", 0, nullptr},
@@ -506,6 +563,7 @@ void d3d9_create_device(Machine& m, const Method& mm) {
     g_state.vp_x = g_state.vp_y = 0; // default viewport = full backbuffer
     g_state.vp_w = (float)g_state.width;
     g_state.vp_h = (float)g_state.height;
+    seed_render_states(g_state.rs); // D3D default render states
     uint32_t dev = m.create_com_instance(g_state.device_vtbl, OBJ_STATE_BYTES);
     m.write32(dev + OBJ_REFCOUNT, 1);
     m.write32(ppOut, dev);
