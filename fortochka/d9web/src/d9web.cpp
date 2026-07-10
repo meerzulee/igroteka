@@ -148,6 +148,51 @@ void fill_caps(Machine& m, uint32_t p, uint32_t devtype) {
     m.write32(p + 204, 0);                   // PixelShaderVersion  = none → FFP
     m.write32(p + 240, 1);                   // NumSimultaneousRTs
 }
+// D3DCAPS8 is D3DCAPS9's 212-byte prefix (identical field offsets up to
+// MaxPixelShaderValue; D3DCAPS9 only appends fields). A game passes a 212-byte
+// stack buffer to IDirect3D8/Device8::GetDeviceCaps, so filling the 304-byte
+// D3DCAPS9 there OVERFLOWS its stack frame (clobbers the return address → jump
+// to garbage). Same values, capped size, and no D3DCAPS9-only +240 field.
+constexpr uint32_t D3DCAPS8_SIZE = 212;
+void fill_caps8(Machine& m, uint32_t p, uint32_t devtype) {
+    if (!p) return;
+    zero_guest(m, p, D3DCAPS8_SIZE);
+    // A DX9-class HAL persona (D3DCAPS8 layout). RTW's "DirectX 9" self-check
+    // reads these fields and rejects the device (exits) if they read as a weak/
+    // old card — HW T&L + shader 1.1 are the ones it gates on (Codex). Values
+    // mirror a typical GeForce-era card. Rendering itself stays fixed-function.
+    m.write32(p + 0, devtype ? devtype : 1);     // DeviceType HAL
+    m.write32(p + 12, 0x20080000);               // Caps2: FULLSCREENGAMMA|CANRENDERWINDOWED
+    m.write32(p + 28, 0x000BFCF1);               // DevCaps: HWRASTERIZATION|HWTRANSFORMANDLIGHT|DRAWPRIMTLVERTEX|DRAWPRIMITIVES2(EX)|…
+    m.write32(p + 32, 0x000002FF);               // PrimitiveMiscCaps: cull + colorwrite + blendop
+    m.write32(p + 36, 0x0EF79EFF);               // RasterCaps: zbias|fog|mipmaplodbias|anisotropy|…
+    m.write32(p + 40, 0x000000FF);               // ZCmpCaps: all compares
+    m.write32(p + 44, 0x00003FFF);               // SrcBlendCaps: all blend factors
+    m.write32(p + 48, 0x00003FFF);               // DestBlendCaps
+    m.write32(p + 52, 0x000000FF);               // AlphaCmpCaps: all compares
+    m.write32(p + 56, 0x0008FFFF);               // ShadeCaps: gouraud + specular + alpha
+    m.write32(p + 60, 0x0000AFC5);               // TextureCaps: PERSPECTIVE|ALPHA|MIPMAP|CUBEMAP|…
+    m.write32(p + 64, 0x03030300);               // TextureFilterCaps: point+linear min/mag/mip
+    m.write32(p + 76, 0x0000003F);               // TextureAddressCaps: wrap|mirror|clamp|border|…
+    m.write32(p + 88, 4096); m.write32(p + 92, 4096);   // MaxTextureWidth/Height
+    m.write32(p + 100, 8192); m.write32(p + 104, 4096); // MaxTextureRepeat/AspectRatio
+    m.write32(p + 108, 16);                      // MaxAnisotropy
+    m.write32(p + 136, 0x000000FF);              // StencilCaps
+    m.write32(p + 140, 0x00100801);              // FVFCaps: 8 tex coords + DONOTSTRIPELEMENTS
+    m.write32(p + 144, 0x03FEFFFF);              // TextureOpCaps
+    m.write32(p + 148, 8); m.write32(p + 152, 8);       // MaxTextureBlendStages/SimultaneousTextures
+    m.write32(p + 156, 0x0000003B);              // VertexProcessingCaps
+    m.write32(p + 160, 8);                       // MaxActiveLights
+    m.write32(p + 176, 0x42800000);              // MaxPointSize = 64.0f
+    m.write32(p + 180, 0x000FFFFF);              // MaxPrimitiveCount
+    m.write32(p + 184, 0x00FFFFFF);              // MaxVertexIndex
+    m.write32(p + 188, 8);                       // MaxStreams
+    m.write32(p + 192, 256);                     // MaxStreamStride
+    m.write32(p + 196, 0xFFFE0101);              // VertexShaderVersion = vs_1_1
+    m.write32(p + 200, 96);                      // MaxVertexShaderConst
+    m.write32(p + 204, 0xFFFF0101);              // PixelShaderVersion = ps_1_1
+    m.write32(p + 208, 0x41000000);              // MaxPixelShaderValue = 8.0f
+}
 
 // A vtable slot: the API name (for diagnostics + as the scope document),
 // the stdcall dword count including `this` (so ret() pops correctly), and the
@@ -751,6 +796,156 @@ void texture_method(Machine& m, unsigned i) {
     dispatch<kTextureVtbl, 22>(m, i, "IDirect3DTexture9");
 }
 
+// ---- Direct3D8 frontend ----
+// RTW (GOG) does NOT fall back to D3D9 on a null Direct3DCreate8 — it requires a
+// working D3D8 stack at startup and RENDERS through the D3D8 device. The D3D8
+// fixed-function pipeline is the same as D3D9's, so the device reuses every
+// helper above (shared g_state); only the methods whose D3D8 signature differs
+// from D3D9 get a thin adapter here. Resources (VB/IB/texture) reuse the D3D9
+// vtables — their IUnknown+Lock shapes are identical across D3D8/D3D9.
+uint32_t g_d3d8_vtbl = 0, g_d3d8_dev_vtbl = 0, g_d3d8_obj = 0, g_d3d8_base = 0;
+
+void d3d8_set_stream_source(Machine& m, const Method& mm) {
+    // SetStreamSource(this, StreamNumber, pStreamData, Stride) — no OffsetInBytes.
+    g_state.stream_vb = m.arg(2);
+    g_state.stream_offset = 0;
+    g_state.stream_stride = m.arg(3);
+    m.ret(mm.nargs, 0);
+}
+void d3d8_set_indices(Machine& m, const Method& mm) {
+    // SetIndices(this, pIndexData, BaseVertexIndex) — base is set here (D3D9 takes
+    // it per-draw). Stashed for the D3D8 DrawIndexedPrimitive below.
+    g_state.stream_ib = m.arg(1);
+    g_d3d8_base = m.arg(2);
+    m.ret(mm.nargs, 0);
+}
+void d3d8_draw_indexed_primitive(Machine& m, const Method& mm) {
+    // DrawIndexedPrimitive(this, PrimType, minIndex, NumVertices, startIndex,
+    //   primCount). No BaseVertexIndex arg — it came from SetIndices.
+    if (m.arg(1) != 4 /*D3DPT_TRIANGLELIST*/)
+        throw MachineError{"D3D8 DrawIndexedPrimitive: only TRIANGLELIST"};
+    if (!g_state.stream_vb || !g_state.stream_ib)
+        throw MachineError{"D3D8 DrawIndexedPrimitive: no vertex/index buffer bound"};
+    uint32_t vb_base = m.read32(g_state.stream_vb + VB_BACKING) + g_state.stream_offset;
+    uint32_t ib_base = m.read32(g_state.stream_ib + VB_BACKING);
+    uint32_t isz = m.read32(g_state.stream_ib + IB_FORMAT) == 101 /*INDEX16*/ ? 2 : 4;
+    uint32_t base_vertex = g_d3d8_base, start_index = m.arg(4);
+    uint32_t stride = g_state.stream_stride;
+    auto vaddr = [&](uint32_t j) {
+        uint32_t ia = ib_base + (start_index + j) * isz;
+        uint32_t idx = isz == 2 ? (m.read32(ia) & 0xFFFF) : m.read32(ia);
+        return vb_base + (base_vertex + idx) * stride;
+    };
+    draw_core(m, m.arg(5), vaddr);
+    m.ret(mm.nargs, 0);
+}
+void d3d8_dev_get_display_mode(Machine& m, const Method& mm) {
+    // GetDisplayMode(this, D3DDISPLAYMODE*) — pMode is arg1 (D3D9 has iSwapChain).
+    fill_display_mode(m, m.arg(1), g_state.width, g_state.height, 60, 22);
+    m.ret(mm.nargs, 0);
+}
+void d3d8_dev_get_device_caps(Machine& m, const Method& mm) {
+    fill_caps8(m, m.arg(1), 1); // GetDeviceCaps(this, D3DCAPS8*) — pCaps is arg1
+    m.ret(mm.nargs, 0);
+}
+void d3d8_obj_get_device_caps(Machine& m, const Method& mm) {
+    // IDirect3D8::GetDeviceCaps(this, Adapter, DeviceType, D3DCAPS8*) — pCaps=arg3.
+    fill_caps8(m, m.arg(3), m.arg(2));
+    m.ret(mm.nargs, 0);
+}
+void d3d8_dev_get_direct3d(Machine& m, const Method& mm) {
+    if (m.arg(1)) m.write32(m.arg(1), g_d3d8_obj); // GetDirect3D(this, IDirect3D8**)
+    m.ret(mm.nargs, 0);
+}
+void d3d8_create_device(Machine& m, const Method& mm) {
+    // CreateDevice(this, Adapter, DeviceType, hFocusWindow, BehaviorFlags,
+    //   pPresentationParameters, ppReturnedDeviceInterface) — same shape as D3D9.
+    uint32_t pp = m.arg(5), ppOut = m.arg(6);
+    uint32_t w = m.read32(pp + 0), h = m.read32(pp + 4);
+    if (w && w <= 4096) g_state.width = w;
+    if (h && h <= 4096) g_state.height = h;
+    g_state.ensure_bb();
+    g_state.vp_x = g_state.vp_y = 0;
+    g_state.vp_w = (float)g_state.width;
+    g_state.vp_h = (float)g_state.height;
+    seed_render_states(g_state.rs);
+    uint32_t dev = m.create_com_instance(g_d3d8_dev_vtbl, OBJ_STATE_BYTES);
+    m.write32(dev + OBJ_REFCOUNT, 1);
+    m.write32(ppOut, dev);
+    m.ret(mm.nargs, 0);
+}
+void d3d8_get_adapter_mode_count(Machine& m, const Method& mm) { m.ret(mm.nargs, 4); }
+void d3d8_enum_adapter_modes(Machine& m, const Method& mm) {
+    // EnumAdapterModes(this, Adapter, Mode, D3DDISPLAYMODE*) — no Format arg.
+    static const uint32_t modes[4][2] = {{640,480},{800,600},{1024,768},{1280,1024}};
+    uint32_t mode = m.arg(2);
+    if (mode < 4) fill_display_mode(m, m.arg(3), modes[mode][0], modes[mode][1], 60, 22);
+    m.ret(mm.nargs, mode < 4 ? 0 : 0x8876086Au /*D3DERR_NOTAVAILABLE*/);
+}
+
+// IDirect3DDevice8 (97 methods). Reuses D3D9 helpers where the signature matches;
+// D3D8-specific adapters for the draws/stream/indices/display-mode that differ.
+// Unimplemented slots are S_OK no-ops (not throws) so RTW's render loop keeps
+// going — missing geometry, never a hard stop.
+constexpr Method kD3d8DevVtbl[] = {
+    {"QueryInterface",3,com_query_interface},{"AddRef",1,com_addref},{"Release",1,com_release},
+    {"TestCooperativeLevel",1,ret_ok},{"GetAvailableTextureMem",1,ret_ok},
+    {"ResourceManagerDiscardBytes",2,ret_ok},{"GetDirect3D",2,d3d8_dev_get_direct3d},
+    {"GetDeviceCaps",2,d3d8_dev_get_device_caps},{"GetDisplayMode",2,d3d8_dev_get_display_mode},
+    {"GetCreationParameters",2,ret_ok},{"SetCursorProperties",4,ret_ok},{"SetCursorPosition",4,ret_ok},
+    {"ShowCursor",2,ret_ok},{"CreateAdditionalSwapChain",3,ret_ok},{"Reset",2,dev_reset},
+    {"Present",5,dev_present},{"GetBackBuffer",4,ret_ok},{"GetRasterStatus",2,ret_ok},
+    {"SetGammaRamp",3,ret_ok},{"GetGammaRamp",2,ret_ok},{"CreateTexture",8,dev_create_texture},
+    {"CreateVolumeTexture",9,ret_ok},{"CreateCubeTexture",7,ret_ok},
+    {"CreateVertexBuffer",6,dev_create_vertex_buffer},{"CreateIndexBuffer",6,dev_create_index_buffer},
+    {"CreateRenderTarget",7,ret_ok},{"CreateDepthStencilSurface",6,ret_ok},{"CreateImageSurface",5,ret_ok},
+    {"CopyRects",6,ret_ok},{"UpdateTexture",3,ret_ok},{"GetFrontBuffer",2,ret_ok},
+    {"SetRenderTarget",3,ret_ok},{"GetRenderTarget",2,ret_ok},{"GetDepthStencilSurface",2,ret_ok},
+    {"BeginScene",1,ret_ok},{"EndScene",1,ret_ok},{"Clear",7,dev_clear},
+    {"SetTransform",3,dev_set_transform},{"GetTransform",3,ret_ok},{"MultiplyTransform",3,ret_ok},
+    {"SetViewport",2,dev_set_viewport},{"GetViewport",2,ret_ok},{"SetMaterial",2,ret_ok},
+    {"GetMaterial",2,ret_ok},{"SetLight",3,ret_ok},{"GetLight",3,ret_ok},{"LightEnable",3,ret_ok},
+    {"GetLightEnable",3,ret_ok},{"SetClipPlane",3,ret_ok},{"GetClipPlane",3,ret_ok},
+    {"SetRenderState",3,dev_set_render_state},{"GetRenderState",3,ret_ok},{"BeginStateBlock",1,ret_ok},
+    {"EndStateBlock",2,ret_ok},{"ApplyStateBlock",2,ret_ok},{"CaptureStateBlock",2,ret_ok},
+    {"DeleteStateBlock",2,ret_ok},{"CreateStateBlock",3,ret_ok},{"SetClipStatus",2,ret_ok},
+    {"GetClipStatus",2,ret_ok},{"GetTexture",3,ret_ok},{"SetTexture",3,dev_set_texture},
+    {"GetTextureStageState",4,ret_ok},{"SetTextureStageState",4,ret_ok},{"ValidateDevice",2,ret_ok},
+    {"GetInfo",4,ret_ok},{"SetPaletteEntries",3,ret_ok},{"GetPaletteEntries",3,ret_ok},
+    {"SetCurrentTexturePalette",2,ret_ok},{"GetCurrentTexturePalette",2,ret_ok},
+    {"DrawPrimitive",4,dev_draw_primitive},{"DrawIndexedPrimitive",6,d3d8_draw_indexed_primitive},
+    {"DrawPrimitiveUP",5,dev_draw_primitive_up},{"DrawIndexedPrimitiveUP",9,ret_ok},
+    {"ProcessVertices",6,ret_ok},{"CreateVertexShader",5,ret_ok},{"SetVertexShader",2,dev_set_fvf},
+    {"GetVertexShader",2,ret_ok},{"DeleteVertexShader",2,ret_ok},{"SetVertexShaderConstant",4,ret_ok},
+    {"GetVertexShaderConstant",4,ret_ok},{"GetVertexShaderDeclaration",4,ret_ok},
+    {"GetVertexShaderFunction",4,ret_ok},{"SetStreamSource",4,d3d8_set_stream_source},
+    {"GetStreamSource",4,ret_ok},{"SetIndices",3,d3d8_set_indices},{"GetIndices",3,ret_ok},
+    {"CreatePixelShader",3,ret_ok},{"SetPixelShader",2,ret_ok},{"GetPixelShader",2,ret_ok},
+    {"DeletePixelShader",2,ret_ok},{"SetPixelShaderConstant",4,ret_ok},{"GetPixelShaderConstant",4,ret_ok},
+    {"GetPixelShaderFunction",4,ret_ok},{"DrawRectPatch",4,ret_ok},{"DrawTriPatch",4,ret_ok},
+    {"DeletePatch",2,ret_ok},
+};
+static_assert(sizeof(kD3d8DevVtbl) / sizeof(Method) == 97,
+              "IDirect3DDevice8 has 97 vtable entries");
+
+// IDirect3D8 (16 methods). Enumeration reuses D3D9 helpers where the signature
+// matches; D3D8 variants for the mode enumeration (no per-call Format arg).
+constexpr Method kD3d8Vtbl[] = {
+    {"QueryInterface",3,com_query_interface},{"AddRef",1,com_addref},{"Release",1,com_release},
+    {"RegisterSoftwareDevice",2,ret_ok},{"GetAdapterCount",1,d3d9_get_adapter_count},
+    {"GetAdapterIdentifier",4,d3d9_get_adapter_identifier},
+    {"GetAdapterModeCount",2,d3d8_get_adapter_mode_count},{"EnumAdapterModes",4,d3d8_enum_adapter_modes},
+    {"GetAdapterDisplayMode",3,d3d9_get_adapter_display_mode},{"CheckDeviceType",6,ret_ok},
+    {"CheckDeviceFormat",7,ret_ok},{"CheckDeviceMultiSampleType",6,ret_ok},
+    {"CheckDepthStencilMatch",6,ret_ok},{"GetDeviceCaps",4,d3d8_obj_get_device_caps},
+    {"GetAdapterMonitor",2,d3d9_get_adapter_monitor},{"CreateDevice",7,d3d8_create_device},
+};
+static_assert(sizeof(kD3d8Vtbl) / sizeof(Method) == 16,
+              "IDirect3D8 has 16 vtable entries");
+
+void d3d8_object_method(Machine& m, unsigned i) { dispatch<kD3d8Vtbl, 16>(m, i, "IDirect3D8"); }
+void d3d8_device_method(Machine& m, unsigned i) { dispatch<kD3d8DevVtbl, 97>(m, i, "IDirect3DDevice8"); }
+
 } // namespace
 
 void install(Machine& m) {
@@ -774,6 +969,25 @@ void install(Machine& m) {
             return true;
         }
         return false;
+    });
+
+    // Direct3D8: RTW requires it and renders through it (see the D3D8 frontend
+    // above). Shares the D3D9 resource vtables + g_state raster.
+    m.add_handler([](Machine& m, const std::string& dll,
+                     const std::string& name) -> bool {
+        if (dll != "d3d8.dll" || name != "Direct3DCreate8") return false;
+        if (!g_state.vbuffer_vtbl) { // shared VB/IB/texture vtables (D3D8 == D3D9)
+            g_state.vbuffer_vtbl = m.create_com_vtable(14, vbuffer_method);
+            g_state.texture_vtbl = m.create_com_vtable(22, texture_method);
+        }
+        if (!g_d3d8_vtbl) {
+            g_d3d8_vtbl = m.create_com_vtable(16, d3d8_object_method);
+            g_d3d8_dev_vtbl = m.create_com_vtable(97, d3d8_device_method);
+            g_d3d8_obj = m.create_com_instance(g_d3d8_vtbl, OBJ_STATE_BYTES);
+            m.write32(g_d3d8_obj + OBJ_REFCOUNT, 1);
+        }
+        m.ret(1, g_d3d8_obj); // Direct3DCreate8(SDKVersion) → IDirect3D8*
+        return true;
     });
 }
 

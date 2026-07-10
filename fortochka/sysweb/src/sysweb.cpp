@@ -192,75 +192,10 @@ uint32_t di8(Machine& m) {
     return g_di8;
 }
 
-// Fake IDirect3D8 (__stdcall COM, this-first; nargs incl. this). RTW REQUIRES a
-// working D3D8 stack at startup: it creates IDirect3D8, enumerates adapters/
-// modes/formats, then creates a device — and it RENDERS through that device (its
-// "DirectX 9" self-check fails and it exits if any step fails). This enumeration
-// surface passes the check; CreateDevice returns a fake IDirect3DDevice8 whose
-// methods are still no-ops. TODO: bridge IDirect3DDevice8 → the d9web D3D9 device
-// (D3D8/D3D9 FFP are close) so resources + draw calls actually render.
-const uint8_t kD3D8Nargs[] = {3,1,1,2,1,4,2,4,3,6,7,6,6,4,2,7};
-uint32_t g_d3d8 = 0;
-// A small set of standard display modes RTW can enumerate (32-bpp X8R8G8B8=22).
-const uint32_t kModes[][2] = {{640,480},{800,600},{1024,768},{1280,1024}};
-constexpr uint32_t kNumModes = 4;
-void write_mode(Machine& m, uint32_t p, uint32_t w, uint32_t h) {
-    if (!p) return;
-    m.write32(p + 0, w); m.write32(p + 4, h);
-    m.write32(p + 8, 60); m.write32(p + 12, 22); // 60Hz, D3DFMT_X8R8G8B8
-}
-uint32_t d3d8_device(Machine& m); // defined below
-void d3d8_method(Machine& m, unsigned method) {
-    unsigned nargs = method < sizeof(kD3D8Nargs) ? kD3D8Nargs[method] : 1;
-    if (method == 0) { if (m.arg(2)) m.write32(m.arg(2), m.arg(0)); m.ret(nargs, 0); return; }
-    if (method == 4) { m.ret(nargs, 1); return; }            // GetAdapterCount = 1
-    if (method == 6) { m.ret(nargs, kNumModes); return; }     // GetAdapterModeCount
-    if (method == 7) {                                        // EnumAdapterModes(a, mode, pMode)
-        uint32_t idx = m.arg(2);
-        if (idx < kNumModes) write_mode(m, m.arg(3), kModes[idx][0], kModes[idx][1]);
-        m.ret(nargs, idx < kNumModes ? 0 : 0x8876086Au);
-        return;
-    }
-    if (method == 8) { write_mode(m, m.arg(2), 1024, 768); m.ret(nargs, 0); return; } // GetAdapterDisplayMode
-    if (method == 15) {                                       // CreateDevice → fake device
-        if (m.arg(6)) m.write32(m.arg(6), d3d8_device(m));
-        m.ret(nargs, 0);                                     // D3D_OK
-        return;
-    }
-    m.ret(nargs, 0); // S_OK for caps/checks (zeroed out-params)
-}
-// IDirect3DDevice8: 97 methods (Codex-confirmed order). nargs incl. `this`,
-// derived from the standard D3D8 signatures. PROBE: log + no-op(S_OK) so we can
-// see whether RTW renders through the D3D8 device or just needs it created.
-const uint8_t kD3D8DevNargs[97] = {
-    3,1,1,1,1,2,2,2,2,2, 4,4,2,3,2,5,4,2,3,2,          // 0-19
-    8,9,7,6,6,7,6,5,6,3, 2,3,2,2,1,1,7,3,3,3,          // 20-39
-    2,2,2,2,3,3,3,3,3,3, 3,3,1,2,2,2,2,3,2,2,          // 40-59
-    3,3,4,4,2,4,3,3,2,2, 4,6,5,9,6,5,2,2,2,4,          // 60-79
-    4,4,4,4,4,3,3,3,2,2, 2,4,4,4,4,4,2};               // 80-96
-uint32_t g_d3d8dev = 0;
-void d3d8dev_method(Machine& m, unsigned method) {
-    unsigned nargs = method < 97 ? kD3D8DevNargs[method] : 1;
-    if (method == 0) { if (m.arg(2)) m.write32(m.arg(2), m.arg(0)); m.ret(nargs, 0); return; }
-    m.ret(nargs, 0); // S_OK / no-op — TODO: bridge to d9web (resources + draw)
-}
-uint32_t d3d8_device(Machine& m) {
-    if (!g_d3d8dev)
-        g_d3d8dev = m.create_com_instance(m.create_com_vtable(97, d3d8dev_method), 8);
-    return g_d3d8dev;
-}
-uint32_t d3d8_obj(Machine& m) {
-    if (!g_d3d8) g_d3d8 = m.create_com_instance(m.create_com_vtable(16, d3d8_method), 8);
-    return g_d3d8;
-}
-
 bool graphics_input(Machine& m, const std::string& dll, const std::string& name) {
-    // Decline the alternate graphics/input stacks so RTW takes the d3d9 path we
-    // implement; these return failure with a NULL out-pointer.
-    if (dll == "d3d8.dll" && name == "Direct3DCreate8") {
-        m.ret(1, d3d8_obj(m)); // TEMP PROBE: non-null IDirect3D8
-        return true;
-    }
+    // d3d8.dll (Direct3DCreate8) is handled by d9web — RTW renders through D3D8
+    // and d9web owns the D3D backend. Decline the remaining alternate stacks so
+    // RTW uses the paths we implement; these return failure with a NULL out-ptr.
     if (dll == "ddraw.dll") {
         if (name == "DirectDrawCreateEx") { // (guid, lplpDD, iid, pUnkOuter)
             uint32_t pp = m.arg(1);
