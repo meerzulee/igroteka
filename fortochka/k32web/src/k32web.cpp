@@ -48,8 +48,12 @@ K32 g_k;
 constexpr uint32_t FILE_TAG = 0x50000000u;
 constexpr uint32_t INVALID_HANDLE = 0xFFFFFFFFu;
 // Cap a single file's size and a single read/write span so a guest can't force
-// an unbounded host allocation or copy.
+// an unbounded host allocation or copy. Also cap the file and open-handle counts
+// so a guest looping CreateFileA over distinct names can't grow host memory
+// without bound (tier-0 never reclaims slots).
 constexpr uint32_t MAX_FILE_BYTES = 64u << 20;
+constexpr size_t MAX_FILES = 4096;
+constexpr size_t MAX_OPEN_FILES = 4096;
 
 // Normalize a VFS path: lowercase, backslashes → forward slashes.
 std::string norm_path(std::string s) {
@@ -66,11 +70,14 @@ int vfs_find(const std::string& name) {
     return -1;
 }
 int vfs_create(const std::string& name) {
+    if (g_k.vfs.size() >= MAX_FILES) return -1; // cap reached
     g_k.vfs.push_back({norm_path(name), {}});
     return (int)g_k.vfs.size() - 1;
 }
-// Open a VFS file index as a new handle. Returns the guest HANDLE.
+// Open a VFS file index as a new handle, or INVALID_HANDLE at the handle cap.
 uint32_t open_file_handle(int vfs_index) {
+    if (vfs_index < 0 || g_k.open_files.size() >= MAX_OPEN_FILES)
+        return INVALID_HANDLE;
     g_k.open_files.push_back({vfs_index, 0});
     return FILE_TAG + (uint32_t)(g_k.open_files.size() - 1);
 }
@@ -96,9 +103,25 @@ uint32_t guest_write_bytes(Machine& m, uint32_t dst, const uint8_t* src, uint32_
     return wrote;
 }
 
-// Synthetic module-handle base. Distinct from the image base (0x400000) and the
-// opaque wide-name fake (0x10000000); index stays small so no bit overlap.
+// Synthetic module-handle base. Distinct from the image base (0x400000); index
+// stays small so no overlap with the FILE_TAG range or high pseudo-handles.
 constexpr uint32_t MODULE_TAG = 0x40000000u;
+// Cap the intern table so a guest looping LoadLibrary over distinct names can't
+// grow host memory without bound; past the cap we hand back the image base,
+// which scopes GetProcAddress to name-only (safe, just unscoped).
+constexpr size_t MAX_MODULES = 4096;
+
+// Read a guest UTF-16LE string as narrow ASCII (DLL names/paths are ASCII).
+// read32 is bounds-checked (0 out of range), so a bogus pointer just terminates.
+std::string read_wstr_narrow(Machine& m, uint32_t p, uint32_t max = 4096) {
+    std::string s;
+    for (uint32_t i = 0; i < max; i++) {
+        uint32_t w = m.read32(p + i * 2) & 0xFFFF; // low 16 bits = the wchar
+        if (w == 0) break;
+        s.push_back((char)(w & 0xFF));
+    }
+    return s;
+}
 
 // Intern a DLL name (normalized: lowercase, no trailing ".dll") → module handle.
 uint32_t module_handle(const std::string& raw) {
@@ -108,6 +131,7 @@ uint32_t module_handle(const std::string& raw) {
         name.resize(name.size() - 4);
     for (size_t i = 0; i < g_k.modules.size(); i++)
         if (g_k.modules[i] == name) return MODULE_TAG + (uint32_t)i;
+    if (g_k.modules.size() >= MAX_MODULES) return 0x00400000; // cap: name-only scope
     g_k.modules.push_back(name);
     return MODULE_TAG + (uint32_t)(g_k.modules.size() - 1);
 }
@@ -281,14 +305,25 @@ void install(Machine& m) {
             uint32_t disp = m.arg(4);
             int idx = vfs_find(path);
             bool exists = idx >= 0;
-            uint32_t handle = INVALID_HANDLE;
+            // Decide the disposition's intent, then open once. Splitting the
+            // "create" step out keeps a cap-hit vfs_create()==-1 from ever
+            // indexing g_k.vfs[-1] (the truncate happens only for a valid idx).
+            bool open_it = false, create = false, trunc = false;
             switch (disp) {
-                case 1: /*CREATE_NEW*/       if (exists) break; idx = vfs_create(path); handle = open_file_handle(idx); break;
-                case 2: /*CREATE_ALWAYS*/    if (!exists) idx = vfs_create(path); g_k.vfs[idx].data.clear(); handle = open_file_handle(idx); break;
-                case 3: /*OPEN_EXISTING*/    if (exists) handle = open_file_handle(idx); break;
-                case 4: /*OPEN_ALWAYS*/      if (!exists) idx = vfs_create(path); handle = open_file_handle(idx); break;
-                case 5: /*TRUNCATE_EXISTING*/if (exists) { g_k.vfs[idx].data.clear(); handle = open_file_handle(idx); } break;
-                default:                     if (exists) handle = open_file_handle(idx); break;
+                case 1: /*CREATE_NEW*/        open_it = create = !exists; break;
+                case 2: /*CREATE_ALWAYS*/     open_it = true; create = !exists; trunc = true; break;
+                case 3: /*OPEN_EXISTING*/     open_it = exists; break;
+                case 4: /*OPEN_ALWAYS*/       open_it = true; create = !exists; break;
+                case 5: /*TRUNCATE_EXISTING*/ open_it = trunc = exists; break;
+                default:                      open_it = exists; break;
+            }
+            uint32_t handle = INVALID_HANDLE;
+            if (open_it) {
+                if (create) idx = vfs_create(path); // -1 if the file cap is hit
+                if (idx >= 0) {
+                    if (trunc) g_k.vfs[idx].data.clear();
+                    handle = open_file_handle(idx); // INVALID if the handle cap is hit
+                }
             }
             if (handle == INVALID_HANDLE) g_k.last_error = 2; // ERROR_FILE_NOT_FOUND
             m.ret(7, handle);
@@ -304,9 +339,13 @@ void install(Machine& m) {
                 return true;
             }
             const auto& data = g_k.vfs[of->vfs_index].data;
-            uint32_t avail = of->pos >= data.size() ? 0 : (uint32_t)(data.size() - of->pos);
+            // Clamp the read cursor to the data end BEFORE forming the source
+            // pointer: data.data()+pos with pos>size (a seek past EOF) is UB even
+            // when the copy length is 0.
+            uint64_t p = of->pos < data.size() ? of->pos : data.size();
+            uint32_t avail = (uint32_t)(data.size() - p);
             uint32_t want = len < avail ? len : avail;
-            uint32_t got = guest_write_bytes(m, buf, data.data() + of->pos, want);
+            uint32_t got = guest_write_bytes(m, buf, data.data() + p, want);
             of->pos += got;
             if (p_read) m.write32(p_read, got);
             m.ret(5, 1);
@@ -323,8 +362,15 @@ void install(Machine& m) {
             int64_t base = method == 1 ? (int64_t)of->pos
                          : method == 2 ? (int64_t)g_k.vfs[of->vfs_index].data.size()
                                        : 0; // FILE_BEGIN
-            int64_t np = base + dist;
-            if (np < 0) { g_k.last_error = 131; m.ret(4, INVALID_HANDLE); return true; }
+            int64_t np = base + dist; // base is capped ≤ MAX_FILE_BYTES, so no i64 overflow
+            // Reject out-of-range targets. Capping pos at MAX_FILE_BYTES keeps
+            // base bounded for the next call (no eventual signed overflow) and
+            // matches WriteFile, which rejects any write past that size anyway.
+            if (np < 0 || np > (int64_t)MAX_FILE_BYTES) {
+                g_k.last_error = 131; // ERROR_NEGATIVE_SEEK
+                m.ret(4, INVALID_HANDLE);
+                return true;
+            }
             of->pos = (uint64_t)np;
             m.ret(4, (uint32_t)of->pos);
             return true;
@@ -497,9 +543,9 @@ void install(Machine& m) {
             return true;
         }
         if (name == "GetModuleHandleW") {
-            // Wide name; not decoded here — NULL and named both map to the image
-            // base (a distinct-module W lookup is rare in the games we target).
-            m.ret(1, 0x00400000);
+            // Decode the wide name so W lookups intern and scope like A lookups.
+            uint32_t p = m.arg(0);
+            m.ret(1, p == 0 ? 0x00400000 : module_handle(read_wstr_narrow(m, p)));
             return true;
         }
         if (name == "GetProcAddress") {
@@ -529,7 +575,10 @@ void install(Machine& m) {
             return true;
         }
         if (name == "LoadLibraryW" || name == "LoadLibraryExW") {
-            m.ret(name == "LoadLibraryExW" ? 3 : 1, 0x10000000); // wide: opaque fake
+            // Decode + intern the wide name so W loads scope like A loads.
+            uint32_t p = m.arg(0);
+            uint32_t h = p ? module_handle(read_wstr_narrow(m, p)) : 0x00400000;
+            m.ret(name == "LoadLibraryExW" ? 3 : 1, h);
             return true;
         }
         if (name == "FreeLibrary") { m.ret(1, 1); return true; }
