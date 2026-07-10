@@ -1,0 +1,64 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Rome: Total War — Fortochka (browser)</title>
+<style>
+  body { margin: 0; background: #111; color: #ccc; font: 13px/1.5 ui-monospace, monospace; }
+  header { padding: 8px 14px; background: #1a1a1a; border-bottom: 1px solid #333; }
+  header b { color: #6cf; }
+  #wrap { display: flex; justify-content: center; padding: 16px; }
+  canvas { background: #000; image-rendering: pixelated; max-width: 100%; border: 1px solid #333; }
+  #status { padding: 6px 14px; color: #9a9; white-space: pre; }
+  .warn { color: #d94; }
+</style>
+<header>
+  <b>RomeTW.exe</b> running on the Fortochka from-scratch Win32 + x86 + D3D8 runtime, compiled to WebAssembly.
+  Assets streamed from the local server. <span class="warn">Interpreter — reaching the menu takes minutes.</span>
+</header>
+<div id="wrap"><canvas id="c" width="1024" height="768"></canvas></div>
+<div id="status">Loading WASM…</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+let img = null, t0 = performance.now();
+
+const worker = new Worker('worker.js');
+worker.onmessage = (e) => {
+  const m = e.data;
+  if (m.type === 'ready') {
+    statusEl.textContent = 'WASM ready — booting RomeTW.exe…';
+    worker.postMessage({
+      type: 'boot',
+      exeURL: '/game-data/RomeTW/RomeTW.exe',
+      assetBase: '/game-data/RomeTW',
+    });
+  } else if (m.type === 'frame') {
+    if (canvas.width !== m.w || canvas.height !== m.h) {
+      canvas.width = m.w; canvas.height = m.h; img = null;
+    }
+    if (!img || img.width !== m.w) img = ctx.createImageData(m.w, m.h);
+    const src = new Uint32Array(m.buf);        // 0xAARRGGBB
+    const dst = new Uint32Array(img.data.buffer); // little-endian RGBA
+    for (let i = 0; i < src.length; i++) {
+      const p = src[i];
+      dst[i] = 0xFF000000 | ((p & 0xFF) << 16) | (p & 0xFF00) | ((p >> 16) & 0xFF);
+    }
+    ctx.putImageData(img, 0, 0);
+    setStatus(m.icount, 'rendering');
+  } else if (m.type === 'progress') {
+    setStatus(m.icount, m.note || 'loading assets');
+  } else if (m.type === 'log') {
+    console.log('[guest] ' + m.line);
+  } else if (m.type === 'done') {
+    statusEl.textContent = 'Process exited (code=' + m.code + ').';
+  } else if (m.type === 'error') {
+    statusEl.textContent = 'Error: ' + m.msg;
+  }
+};
+
+function setStatus(icount, phase) {
+  const secs = ((performance.now() - t0) / 1000).toFixed(0);
+  const b = (icount / 1e9).toFixed(2);
+  statusEl.textContent = `RomeTW.exe — ${phase} · ${b}B guest instructions · ${secs}s elapsed`;
+}
+</script>

@@ -44,6 +44,9 @@ class Machine {
     // Set up the initial stack and entry return sentinel, then run any TLS
     // callbacks, then the entry point. Returns the process exit code.
     // Throws MachineError on fault / unimplemented import / runaway.
+    // run_entry / run_more return this when the step budget was hit but the
+    // process is still alive (resumable) — as opposed to a real >=0 exit code.
+    static constexpr int RUNNING = -3;
     int run_entry(uint64_t step_budget = 200'000'000);
     // Resume a process that returned early because run_entry/run_more hit its
     // step budget (scheduler + thread state persist in the Machine). Runs up to

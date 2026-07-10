@@ -211,14 +211,19 @@ int Machine::run_entry(uint64_t step_budget) {
     for (uint32_t cb : image_.tls_callbacks)
         call_guest(cb, {image_.base, 1 /*DLL_PROCESS_ATTACH*/, 0}, step_budget);
 
-    return scheduler_run(kThreadSliceSteps, step_budget);
+    scheduler_run(kThreadSliceSteps, step_budget);
+    // scheduler_run returns exit_code (default 0) on BOTH a real exit and a
+    // budget hit, so distinguish them via `exited`: RUNNING (-3) means the slice
+    // budget was reached and the process is resumable via run_more().
+    return exited ? (int)exit_code : RUNNING;
 }
 
 int Machine::run_more(uint64_t delta_steps) {
     if (exited) return (int)exit_code;
     // Resume: scheduler_run re-parks the current thread (a no-op, its state was
     // saved on the budget return) and continues from where it stopped.
-    return scheduler_run(kThreadSliceSteps, proc_icount_ + delta_steps);
+    scheduler_run(kThreadSliceSteps, proc_icount_ + delta_steps);
+    return exited ? (int)exit_code : RUNNING;
 }
 
 uint32_t Machine::call_guest(uint32_t func_va, const std::vector<uint32_t>& args,
