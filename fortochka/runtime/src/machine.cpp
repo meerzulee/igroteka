@@ -415,14 +415,18 @@ Machine::Slice Machine::drive_slice(uint32_t sentinel_slot, uint64_t slice_steps
                 break;
             }
             case Exit::Fault: {
-                char buf[128];
+                uint32_t sp = cpu_.gpr[ESP];
+                char buf[320];
                 std::snprintf(buf, sizeof buf,
-                              "cpu fault kind=%d eip=%x bytes=%02x %02x %02x %02x %02x "
-                              "ebx=%x eax=%x",
+                              "cpu fault kind=%d eip=%x bytes=%02x %02x %02x %02x "
+                              "esp=%x ebp=%x eax=%x ebx=%x ecx=%x edx=%x "
+                              "stk=[%x %x %x %x %x %x %x %x]",
                               (int)r.fault, cpu_.eip, read32(cpu_.eip) & 0xFF,
                               (read32(cpu_.eip) >> 8) & 0xFF, (read32(cpu_.eip) >> 16) & 0xFF,
-                              (read32(cpu_.eip) >> 24) & 0xFF, read32(cpu_.eip + 4) & 0xFF,
-                              cpu_.gpr[3], cpu_.gpr[0]);
+                              (read32(cpu_.eip) >> 24) & 0xFF, sp, cpu_.gpr[EBP],
+                              cpu_.gpr[EAX], cpu_.gpr[EBX], cpu_.gpr[ECX], cpu_.gpr[EDX],
+                              read32(sp), read32(sp + 4), read32(sp + 8), read32(sp + 12),
+                              read32(sp + 16), read32(sp + 20), read32(sp + 24), read32(sp + 28));
                 throw MachineError{buf};
             }
             case Exit::Steps:
@@ -446,7 +450,7 @@ int Machine::scheduler_run(uint64_t slice) {
     // slot so the loop below can treat every thread uniformly as load-then-save.
     threads_[cur_tid_].cpu = cpu_;
 
-    for (;;) {
+        for (;;) {
         if (exited) return (int)exit_code;
 
         // 1. Complete any parked waits whose objects are now available. The ret
