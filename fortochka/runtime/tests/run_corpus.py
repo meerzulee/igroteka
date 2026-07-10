@@ -45,6 +45,7 @@ CASES = [
     ("crt.exe", "zhrun", [], 42, None),  # CRT pre-main: Interlocked, MB<->WC, LCMapString, GetStringType, GetCPInfo
     ("dirscan.exe", "zhrun", [], 42, None),  # path/cwd + FindFirstFile/FindNextFile glob over the VFS
     ("reg.exe", "zhrun", [], 42, None),  # advapi32 registry shim: create/set/query + miss paths
+    ("pump.exe", "zhrun", [], 42, None),  # pump adjuncts + winmm timing + GetDeviceCaps (batch 4)
 ]
 
 

@@ -41,6 +41,10 @@ struct State {
     // GWL_WNDPROC is stored in `wndproc` above so subclassing redirects dispatch.
     uint32_t userdata = 0, style = 0, exstyle = 0;
     int cursor_show = 0;                   // ShowCursor display counter
+    // RegisterWindowMessageA interned names: message id = 0xC000 + index
+    // (the real RegisterWindowMessage range), same id for the same name.
+    std::vector<std::string> wm_names;
+    uint32_t mm_timers = 0; // timeSetEvent ids handed out (timers never fire)
     std::vector<uint32_t> fb;             // ARGB pixels, width*height
     void ensure_fb() {
         if (fb.size() != (size_t)width * height) fb.assign((size_t)width * height, 0xFF000000u);
@@ -82,7 +86,8 @@ void install(Machine& m) {
 
     m.add_handler([](Machine& m, const std::string& dll,
                      const std::string& name) -> bool {
-        if (dll != "user32.dll" && dll != "gdi32.dll") return false;
+        if (dll != "user32.dll" && dll != "gdi32.dll" && dll != "winmm.dll")
+            return false;
         State& s = g_state;
 
         // ---- gdi32: minimal painting into the client framebuffer ----
@@ -368,6 +373,93 @@ void install(Machine& m) {
             m.ret(nargs, 1);
             return true;
         }
+
+        // ---- message-pump adjuncts (RTW batch 4) ----
+        if (name == "GetQueueStatus") {
+            // (flags) → high word: kinds currently in queue; low: since last
+            // call. Report QS_ALLEVENTS when anything is queued.
+            uint32_t qs = s.queue.empty() ? 0 : 0x04BF;
+            m.ret(1, (qs << 16) | qs);
+            return true;
+        }
+        if (name == "PostThreadMessageA") {
+            // (idThread, Msg, wParam, lParam): single thread → the one queue.
+            bool full = s.queue.size() >= kQueueMax;
+            if (!full) post_message(0, m.arg(1), m.arg(2), m.arg(3));
+            m.ret(4, full ? 0 : 1);
+            return true;
+        }
+        if (name == "MsgWaitForMultipleObjects") {
+            // (nCount, pHandles, fWaitAll, dwMilliseconds, dwWakeMask).
+            // Headless tier 0: a queued message reports WAIT_OBJECT_0+nCount;
+            // finite timeout with nothing queued reports WAIT_TIMEOUT; INFINITE
+            // with an empty queue would block forever — error loudly (same
+            // starved-pump policy as GetMessageA).
+            uint32_t n = m.arg(0), timeout = m.arg(3);
+            if (!s.queue.empty()) { m.ret(5, n); return true; }
+            if (timeout != 0xFFFFFFFFu) { m.ret(5, 0x102 /*WAIT_TIMEOUT*/); return true; }
+            throw runtime::MachineError{
+                "MsgWaitForMultipleObjects INFINITE on empty queue "
+                "(tier-0 headless has no event source)"};
+        }
+        if (name == "RegisterWindowMessageA") {
+            // Intern the name: the same string always yields the same id in the
+            // real RegisterWindowMessage range (0xC000..).
+            std::string nm = m.read_cstr(m.arg(0));
+            for (size_t i = 0; i < s.wm_names.size(); i++)
+                if (s.wm_names[i] == nm) { m.ret(1, 0xC000 + (uint32_t)i); return true; }
+            if (s.wm_names.size() >= 0x3FFF) { m.ret(1, 0); return true; } // range cap
+            s.wm_names.push_back(nm);
+            m.ret(1, 0xC000 + (uint32_t)(s.wm_names.size() - 1));
+            return true;
+        }
+        if (name == "GetKeyboardState") {
+            // (PBYTE lpKeyState[256]): headless — no key down.
+            uint32_t p = m.arg(0);
+            for (uint32_t off = 0; off < 256; off += 4) m.write32(p + off, 0);
+            m.ret(1, 1);
+            return true;
+        }
+        if (name == "SetKeyboardState") { m.ret(1, 1); return true; }
+        if (name == "SetCursorPos") { m.ret(2, 1); return true; }
+        if (name == "GetDoubleClickTime") { m.ret(0, 500); return true; }
+
+        // ---- gdi32: display caps ----
+        if (name == "GetDeviceCaps") {
+            // (hdc, index): the display metrics an era game gates on.
+            uint32_t idx = m.arg(1), v = 0;
+            switch (idx) {
+                case 8:  v = 1024; break; // HORZRES
+                case 10: v = 768; break;  // VERTRES
+                case 12: v = 32; break;   // BITSPIXEL
+                case 14: v = 1; break;    // PLANES
+                case 88: v = 96; break;   // LOGPIXELSX
+                case 90: v = 96; break;   // LOGPIXELSY
+                case 116: v = 60; break;  // VREFRESH
+                default: break;
+            }
+            m.ret(2, v);
+            return true;
+        }
+
+        // ---- winmm: multimedia timing ----
+        if (name == "timeGetTime") {
+            m.ret(0, (uint32_t)(m.cpu().icount / 1000)); // same clock as GetTickCount
+            return true;
+        }
+        if (name == "timeBeginPeriod" || name == "timeEndPeriod") {
+            m.ret(1, 0); // TIMERR_NOERROR
+            return true;
+        }
+        if (name == "timeSetEvent") {
+            // (uDelay, uResolution, lpTimeProc, dwUser, fuEvent) → a nonzero
+            // timer id. Timers never fire in headless tier 0; the rAF pump work
+            // (F3) gives them a real clock. If a game hangs waiting on one, the
+            // stub log will say so.
+            m.ret(5, ++s.mm_timers);
+            return true;
+        }
+        if (name == "timeKillEvent") { m.ret(1, 0); return true; }
 
         // Cosmetic no-ops the corpus/RTW call during window setup.
         if (name == "ShowWindow" || name == "UpdateWindow" ||
