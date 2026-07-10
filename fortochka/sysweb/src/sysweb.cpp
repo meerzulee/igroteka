@@ -32,6 +32,26 @@ const char* wsock_ordinal(const std::string& name) {
     }
 }
 
+// A single self-referential fake object stands in for every Steam interface
+// (ISteamClient/User/Friends/...). Its vtable is 256 __thiscall thunks that each
+// return `this` (ecx) and pop nothing: so a method returning an interface hands
+// back the same non-null object (chained GetISteam* never yields null), a method
+// returning a handle/bool hands back a non-null/nonzero token, and nothing RTW
+// dereferences is ever null. Created lazily (heap is stable after run_entry).
+uint32_t g_steam_obj = 0;
+uint32_t ensure_steam(Machine& m) {
+    if (!g_steam_obj) {
+        uint32_t vtbl = m.create_com_vtable(256, [](Machine& m, unsigned) {
+            // __thiscall: `this` is in ECX, args (unknown count) on the stack.
+            // Return `this` (always non-null); pop nothing. Arg-count drift is
+            // the known risk — refined per-method if the boot needs it.
+            m.ret(0, m.cpu().gpr[zhelezo::ECX]);
+        });
+        g_steam_obj = m.create_com_instance(vtbl, 4);
+    }
+    return g_steam_obj;
+}
+
 bool steam_api(Machine& m, const std::string& name) {
     // The Steamworks flat API is __cdecl: the CALLER cleans the stack, so every
     // handler pops NOTHING (m.ret(0, ...)). Getting this wrong corrupts the
@@ -50,8 +70,7 @@ bool steam_api(Machine& m, const std::string& name) {
         "SteamNetworking", "SteamGameServer", "SteamGameServerNetworking"};
     for (auto g : kGetters)
         if (name == g) {
-            std::fprintf(stderr, "sysweb: steam getter %s -> null\n", g);
-            m.ret(0, 0);
+            m.ret(0, ensure_steam(m)); // a non-null self-referential fake
             return true;
         }
     // Shutdown / callbacks / (un)register: all no-op void or ignorable.
