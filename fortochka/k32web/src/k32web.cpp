@@ -324,13 +324,26 @@ void build_find(K32::FindState& fs, const std::string& pattern_raw) {
     // surfaced from the in-memory VFS (dedup by basename).
     std::string hdir = host_path_for(dir);
     if (hdir.empty()) return;
-    DIR* dp = opendir(hdir.c_str());
-    if (!dp) return;
     auto already = [&](const std::string& nm) {
         for (const auto& e : fs.entries)
             if (e.name == nm) return true;
         return false;
     };
+#ifdef __EMSCRIPTEN__
+    // Browser: there is no host FS to opendir/readdir over HTTP, and a wildcard
+    // directory listing needs a server-side manifest (not yet built). But games
+    // frequently use FindFirstFile as an existence check on a SPECIFIC file
+    // (no glob wildcard) — e.g. RTW resolving "underlay_greek_tenamentA.cas".
+    // Handle that by HEAD-probing the single path. Wildcard globs still degrade
+    // to the materialized-VFS matches collected above.
+    if (glob.find_first_of("*?") == std::string::npos && !already(glob)) {
+        std::string full = hdir + "/" + glob;
+        if (zhweb_host_exists(full.c_str()))
+            fs.entries.push_back({glob, false, 0});
+    }
+#else
+    DIR* dp = opendir(hdir.c_str());
+    if (!dp) return;
     while (struct dirent* de = readdir(dp)) {
         std::string nm = de->d_name;
         if (nm == "." || nm == "..") continue;
@@ -343,6 +356,7 @@ void build_find(K32::FindState& fs, const std::string& pattern_raw) {
         fs.entries.push_back({lower, is_dir, sz});
     }
     closedir(dp);
+#endif
 }
 // Fill a WIN32_FIND_DATAA (320 bytes) from a FindEntry. All writes bounds-checked.
 void fill_find_data_a(Machine& m, uint32_t p, const K32::FindEntry& e) {
