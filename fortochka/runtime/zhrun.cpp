@@ -33,11 +33,13 @@ static std::vector<uint8_t> slurp(const char* path) {
 
 int main(int argc, char** argv) {
     const char* path = nullptr;
+    const char* game_dir = nullptr;
     uint32_t arena_mb = 64;
     uint64_t max_steps = 200'000'000;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--arena") && i + 1 < argc) arena_mb = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--steps") && i + 1 < argc) max_steps = strtoull(argv[++i], nullptr, 0);
+        else if (!strcmp(argv[i], "--game") && i + 1 < argc) game_dir = argv[++i];
         else path = argv[i];
     }
     if (!path) {
@@ -61,6 +63,11 @@ int main(int argc, char** argv) {
     u32web::install(m);
     d9web::install(m);
     sysweb::install(m);
+    if (game_dir) {
+        // Mount the real game tree at C:\RTW and run the guest from there.
+        k32web::mount_host_dir("c:/rtw", game_dir);
+        fprintf(stderr, "zhrun: mounted %s at c:\\rtw\n", game_dir);
+    }
 
     int code;
     try {

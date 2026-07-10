@@ -1,6 +1,7 @@
 #include "runtime/machine.h"
 
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 
 namespace runtime {
@@ -413,10 +414,17 @@ Machine::Slice Machine::drive_slice(uint32_t sentinel_slot, uint64_t slice_steps
                 if (yield_blocked_) { yield_blocked_ = false; return Slice::Blocked; }
                 break;
             }
-            case Exit::Fault:
-                throw MachineError{"cpu fault kind=" + std::to_string((int)r.fault) +
-                                   " eip=" + std::to_string(cpu_.eip) +
-                                   " addr=" + std::to_string(r.fault_addr)};
+            case Exit::Fault: {
+                char buf[128];
+                std::snprintf(buf, sizeof buf,
+                              "cpu fault kind=%d eip=%x bytes=%02x %02x %02x %02x %02x "
+                              "ebx=%x eax=%x",
+                              (int)r.fault, cpu_.eip, read32(cpu_.eip) & 0xFF,
+                              (read32(cpu_.eip) >> 8) & 0xFF, (read32(cpu_.eip) >> 16) & 0xFF,
+                              (read32(cpu_.eip) >> 24) & 0xFF, read32(cpu_.eip + 4) & 0xFF,
+                              cpu_.gpr[3], cpu_.gpr[0]);
+                throw MachineError{buf};
+            }
             case Exit::Steps:
                 return Slice::Sliced;
             default:

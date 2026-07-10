@@ -38,7 +38,9 @@ bool steam_api(Machine& m, const std::string& name) {
     // guest stack. GOG's build runs without Steam, so Init/Restart both decline.
     if (name == "SteamAPI_RestartAppIfNecessary") { m.ret(0, 0); return true; } // don't relaunch
     if (name == "SteamAPI_Init" || name == "SteamGameServer_Init") {
-        m.ret(0, 0); // false: Steam not present → RTW runs standalone
+        // The GOG steam_api.dll stub reports SUCCESS so the game runs without a
+        // real Steam client (returning false triggers "Steam must be running").
+        m.ret(0, 1); // true
         return true;
     }
     // Interface getters return null; RTW null-checks them after a failed Init.

@@ -6,6 +6,9 @@
 #include <string>
 #include <vector>
 
+#include <dirent.h>   // host-mount directory enumeration (native boot only)
+#include <sys/stat.h>
+
 namespace k32web {
 
 using runtime::Machine;
@@ -75,6 +78,9 @@ struct K32 {
         uint32_t size = 0;
     };
     std::vector<Mapping> mappings; // handle = MAP_TAG + index
+    // Host-directory mount (native boot): a guest path under `mount_prefix`
+    // that misses the in-memory VFS is lazily read from the host filesystem.
+    std::string mount_prefix, mount_root;
 };
 K32 g_k;
 
@@ -86,9 +92,9 @@ constexpr uint32_t INVALID_HANDLE = 0xFFFFFFFFu;
 // an unbounded host allocation or copy. Also cap the file and open-handle counts
 // so a guest looping CreateFileA over distinct names can't grow host memory
 // without bound (tier-0 never reclaims slots).
-constexpr uint32_t MAX_FILE_BYTES = 64u << 20;
-constexpr size_t MAX_FILES = 4096;
-constexpr size_t MAX_OPEN_FILES = 4096;
+constexpr uint32_t MAX_FILE_BYTES = 512u << 20; // real game packs run large
+constexpr size_t MAX_FILES = 1u << 16;          // a game touches thousands
+constexpr size_t MAX_OPEN_FILES = 1u << 16;
 // Cap string-conversion element counts so a huge guest-supplied length can't
 // drive a multi-billion-iteration host loop (the HLE runs outside the CPU step
 // budget). No real string exceeds the arena; 64 Mi chars is far above any.
@@ -169,6 +175,44 @@ int vfs_create(const std::string& name) {
     g_k.vfs.push_back({norm_path(name), {}});
     return (int)g_k.vfs.size() - 1;
 }
+// Map a normalized guest path to its host path if it lies under the mount.
+std::string host_path_for(const std::string& norm) {
+    if (g_k.mount_root.empty()) return {};
+    const std::string& pre = g_k.mount_prefix;
+    if (norm.size() < pre.size() || norm.compare(0, pre.size(), pre) != 0) return {};
+    std::string rest = norm.substr(pre.size());
+    while (!rest.empty() && rest[0] == '/') rest.erase(0, 1);
+    return rest.empty() ? g_k.mount_root : g_k.mount_root + "/" + rest;
+}
+// Lazily load a host-backed file into the VFS on first access; return its index
+// (or -1 if not a regular file under the mount). One log line per real load.
+int host_load(const std::string& norm) {
+    std::string hp = host_path_for(norm);
+    if (hp.empty()) return -1;
+    struct stat st;
+    if (stat(hp.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return -1;
+    if (g_k.vfs.size() >= MAX_FILES) return -1;
+    FILE* f = std::fopen(hp.c_str(), "rb");
+    if (!f) return -1;
+    g_k.vfs.push_back({norm, {}});
+    int idx = (int)g_k.vfs.size() - 1;
+    auto& data = g_k.vfs[idx].data;
+    data.resize((size_t)st.st_size);
+    if (st.st_size) {
+        size_t got = std::fread(data.data(), 1, (size_t)st.st_size, f);
+        data.resize(got);
+    }
+    std::fclose(f);
+    std::fprintf(stderr, "vfs: host-load %s (%zu bytes)\n", norm.c_str(),
+                 data.size());
+    return idx;
+}
+// vfs_find, then a host-mount fallback (open / attribute / read paths).
+int vfs_find_host(const std::string& name) {
+    std::string n = norm_path(name);
+    int i = vfs_find(n);
+    return i >= 0 ? i : host_load(n);
+}
 // Open a VFS file index as a new handle, or INVALID_HANDLE at the handle cap.
 uint32_t open_file_handle(int vfs_index) {
     if (vfs_index < 0 || g_k.open_files.size() >= MAX_OPEN_FILES)
@@ -248,6 +292,29 @@ void build_find(K32::FindState& fs, const std::string& pattern_raw) {
             }
         }
     }
+    // Host mount: also enumerate the real directory, skipping names already
+    // surfaced from the in-memory VFS (dedup by basename).
+    std::string hdir = host_path_for(dir);
+    if (hdir.empty()) return;
+    DIR* dp = opendir(hdir.c_str());
+    if (!dp) return;
+    auto already = [&](const std::string& nm) {
+        for (const auto& e : fs.entries)
+            if (e.name == nm) return true;
+        return false;
+    };
+    while (struct dirent* de = readdir(dp)) {
+        std::string nm = de->d_name;
+        if (nm == "." || nm == "..") continue;
+        std::string lower = norm_path(nm);
+        if (!glob_match(glob, lower) || already(lower)) continue;
+        struct stat st;
+        std::string full = hdir + "/" + nm;
+        bool is_dir = stat(full.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+        uint64_t sz = is_dir ? 0 : (uint64_t)st.st_size;
+        fs.entries.push_back({lower, is_dir, sz});
+    }
+    closedir(dp);
 }
 // Fill a WIN32_FIND_DATAA (320 bytes) from a FindEntry. All writes bounds-checked.
 void fill_find_data_a(Machine& m, uint32_t p, const K32::FindEntry& e) {
@@ -264,7 +331,8 @@ void fill_find_data_a(Machine& m, uint32_t p, const K32::FindEntry& e) {
 // to the same VFS key. Returns the guest HANDLE or INVALID_HANDLE.
 uint32_t open_vfs(const std::string& path_raw, uint32_t disp) {
     std::string path = resolve_path(path_raw);
-    int idx = vfs_find(path);
+    // For dispositions that read an existing file, fall back to the host mount.
+    int idx = (disp == 3 || disp == 5) ? vfs_find_host(path) : vfs_find(path);
     bool exists = idx >= 0;
     bool open_it = false, create = false, trunc = false;
     switch (disp) {
@@ -346,6 +414,13 @@ uint32_t vfs_attrs(const std::string& path_raw) {
         if (vf.name.size() > prefix.size() &&
             vf.name.compare(0, prefix.size(), prefix) == 0)
             return 0x10;
+    // Host mount: is it a real file or directory on disk?
+    std::string hp = host_path_for(path);
+    if (!hp.empty()) {
+        struct stat st;
+        if (stat(hp.c_str(), &st) == 0)
+            return S_ISDIR(st.st_mode) ? 0x10 : 0x80;
+    }
     return INVALID_HANDLE;
 }
 // Copy `n` bytes from host `src` into guest memory at `dst`, bounds-checked per
@@ -1642,6 +1717,14 @@ void install(Machine& m) {
         }
         return false;
     });
+}
+
+void mount_host_dir(const std::string& guest_prefix, const std::string& host_root) {
+    g_k.mount_prefix = strip_slash(norm_path(guest_prefix));
+    g_k.mount_root = host_root;
+    while (!g_k.mount_root.empty() && g_k.mount_root.back() == '/')
+        g_k.mount_root.pop_back();
+    g_k.cwd = g_k.mount_prefix; // run the guest from the mount root
 }
 
 } // namespace k32web

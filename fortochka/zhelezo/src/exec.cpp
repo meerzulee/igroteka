@@ -691,12 +691,32 @@ void execX87(Cpu& c, const Bus& b, const Inst& in) {
                     throw UdFault{};
                 case 6: // D9 F0..F7: transcendental / stack control
                     switch (i) {
+                        case 0: fst(c, 0) = std::exp2(fst(c, 0)) - 1.0;     // f2xm1
+                                return;
+                        case 1: fst(c, 1) = fst(c, 1) * std::log2(fst(c, 0)); // fyl2x
+                                fpop(c); return;
+                        case 2: { double t = std::tan(fst(c, 0));          // fptan
+                                  fst(c, 0) = t; fpush(c, 1.0);
+                                  c.x87.status &= ~0x0400; return; }       // C2=0
+                        case 3: fst(c, 1) = std::atan2(fst(c, 1), fst(c, 0)); // fpatan
+                                fpop(c); return;
+                        case 4: { double v = fst(c, 0);                    // fxtract
+                                  if (v == 0.0) { fpush(c, 0.0); return; }
+                                  int e; double ma = std::frexp(v, &e);
+                                  fst(c, 0) = (double)(e - 1); fpush(c, ma * 2.0);
+                                  return; }
+                        case 5: fst(c, 0) = std::remainder(fst(c, 0), fst(c, 1)); // fprem1
+                                c.x87.status &= ~0x0400; return;           // C2=0 (complete)
                         case 6: c.x87.top = (c.x87.top - 1) & 7; return;   // fdecstp: TOP-1
                         case 7: c.x87.top = (c.x87.top + 1) & 7; return;   // fincstp: TOP+1
                     }
                     throw UdFault{};
-                case 7: // D9 F8..FF: fsqrt/frndint/fsin/fcos/fscale/fsincos
+                case 7: // D9 F8..FF: fprem/fsqrt/frndint/fsin/fcos/fscale/fsincos
                     switch (i) {
+                        case 0: fst(c, 0) = std::fmod(fst(c, 0), fst(c, 1)); // fprem
+                                c.x87.status &= ~0x0400; return;           // C2=0
+                        case 1: fst(c, 1) = fst(c, 1) * std::log2(fst(c, 0) + 1.0); // fyl2xp1
+                                fpop(c); return;
                         case 2: fst(c, 0) = std::sqrt(fst(c, 0)); return;  // fsqrt
                         case 3: { double s = std::sin(fst(c, 0));          // fsincos
                                   fst(c, 0) = std::cos(fst(c, 0)); fpush(c, s);
