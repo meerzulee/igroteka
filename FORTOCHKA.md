@@ -312,6 +312,18 @@ fault-EIP precision all validated correct; two bugs it found (unbounded
 reverse-thunk recursion, GetMessage empty-queue semantics) fixed with a depth
 guard + `recurse.exe` regression rung. Canvas window + WM_PAINT + live input,
 plus the SEH/`seh.exe` item below, remain for F2/F3 proper.
+**Window-management surface added:** GetSystemMetrics, AdjustWindowRect,
+Get/SetWindowLongA (GWL_WNDPROC subclassing redirects dispatch), LoadCursor/Icon,
+MessageBox, timers, focus/foreground (`winmgr.exe`).
+
+**kernel32 breadth (F2/F4-enabling), all Codex-reviewed:**
+- `GetProcAddress` resolves against the static import table and returns the real
+  callable thunk; module handles carry DLL identity (LoadLibrary/GetModuleHandle
+  intern the name) so the lookup scopes to the right DLL (`gpa.exe`).
+- **In-memory VFS + file I/O** (browser-side → OPFS): CreateFileA/ReadFile/
+  WriteFile/SetFilePointer/GetFileSize/GetFileAttributesA/CloseHandle, host-safe
+  bounded copies + size/count caps (`vfs.exe`). This is the data-load path RTW
+  needs and the substrate for stub-log-driven booting in F4.
 
 ### Phase F3 — Pixels (target: 6–10 weeks, parallel with F2 after F1)
 
@@ -335,9 +347,16 @@ plus the SEH/`seh.exe` item below, remain for F2/F3 proper.
       sampling + MODULATE in the rasterizer (`tex.exe` checkerboard quad).
       Rasterizer hardened vs guest floats (Codex: finite guards, primitive cap,
       fill budget, alloc-overflow). Full FFP path runs: transform → texture →
-      raster → present → canvas. Next: index buffers, render states (alpha/
-      depth), WebGL backend swap.
-- [ ] Caps persona (Radeon 9700), CheckDeviceFormat table
+      raster → present → canvas. **Index buffers MET** (`itri.exe`).
+      **Render states MET:** depth buffer (ZENABLE/ZWRITEENABLE, LESSEQUAL),
+      backface cull (CULLMODE, CCW default), src-over alpha blend, `rs[256]`
+      seeded with D3D defaults at CreateDevice/Reset (`rstest.exe` — depth
+      ordering verified by exact center color). Next: multitexture, WebGL swap.
+- [x] Caps persona + device-init surface: GetAdapter*/Check* (S_OK),
+      GetDeviceCaps forging a **fixed-function software persona**
+      (Vertex/PixelShaderVersion=0 → RTW takes the FFP path), device Reset;
+      caps offsets validated against mingw d3d9caps.h (`d3dinit.exe`). Refine to
+      a real Radeon-9700 CheckDeviceFormat table once we see RTW read caps.
 - [ ] FFP path: port/extend the d8web synthesizer to D3D9 stage semantics
 - [ ] Shader translator: vs_1_1 → GLSL ES first, then ps_1_1–ps_1_4, then
       SM2.0 — each tier is a corpus binary
