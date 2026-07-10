@@ -132,6 +132,65 @@ bool ole32(Machine& m, const std::string& name) {
     return false;
 }
 
+// Fake DirectInput8. COM (__stdcall, `this` is the first STACK arg, so
+// m.arg(0)=this, m.arg(1..)=args, and m.ret(nargs,...) must pop the exact count
+// incl. this). IDirectInput8::CreateDevice hands back a fake device; the device
+// reports no input (zeroed state, no buffered data) so RTW's input init and
+// polling succeed with a quiet keyboard/mouse.
+const uint8_t kDI8Nargs[]  = {3,1,1,4,5,2,3,3,4,6,5};                    // IDirectInput8A
+const uint8_t kDIDevNargs[] = {3,1,1,2,4,3,3,1,1,3,5,2,2,3,4,2,3,5,5,4,  // IDirectInputDevice8A
+                               3,2,2,4,2,1,5,5,5,4,4,2};
+uint32_t g_di8 = 0, g_didev = 0;
+
+void di_device_method(Machine& m, unsigned method) {
+    unsigned nargs = method < sizeof(kDIDevNargs) ? kDIDevNargs[method] : 1;
+    if (method == 0) { // QueryInterface(this, riid, ppv) → same object
+        if (m.arg(2)) m.write32(m.arg(2), m.arg(0));
+        m.ret(nargs, 0);
+        return;
+    }
+    if (method == 9) { // GetDeviceState(this, cbData, lpvData): all-zero state
+        uint32_t cb = m.arg(1), buf = m.arg(2);
+        for (uint32_t i = 0; i < cb && i < 4096; i += 4) m.write32(buf + i, 0);
+        m.ret(nargs, 0);
+        return;
+    }
+    if (method == 10) { // GetDeviceData(this, cb, rgdod, pdwInOut, flags): 0 events
+        if (m.arg(3)) m.write32(m.arg(3), 0);
+        m.ret(nargs, 0);
+        return;
+    }
+    m.ret(nargs, 0); // DI_OK for everything else
+}
+uint32_t di_device(Machine& m) {
+    if (!g_didev) {
+        uint32_t vt = m.create_com_vtable(32, di_device_method);
+        g_didev = m.create_com_instance(vt, 8);
+    }
+    return g_didev;
+}
+void di8_method(Machine& m, unsigned method) {
+    unsigned nargs = method < sizeof(kDI8Nargs) ? kDI8Nargs[method] : 1;
+    if (method == 0) { // QueryInterface
+        if (m.arg(2)) m.write32(m.arg(2), m.arg(0));
+        m.ret(nargs, 0);
+        return;
+    }
+    if (method == 3) { // CreateDevice(this, rguid, lplpDevice, pUnkOuter)
+        if (m.arg(2)) m.write32(m.arg(2), di_device(m));
+        m.ret(nargs, 0); // DI_OK
+        return;
+    }
+    m.ret(nargs, 0); // EnumDevices etc.: succeed, enumerate nothing
+}
+uint32_t di8(Machine& m) {
+    if (!g_di8) {
+        uint32_t vt = m.create_com_vtable(11, di8_method);
+        g_di8 = m.create_com_instance(vt, 8);
+    }
+    return g_di8;
+}
+
 bool graphics_input(Machine& m, const std::string& dll, const std::string& name) {
     // Decline the alternate graphics/input stacks so RTW takes the d3d9 path we
     // implement; these return failure with a NULL out-pointer.
@@ -149,13 +208,10 @@ bool graphics_input(Machine& m, const std::string& dll, const std::string& name)
         if (name == "DirectDrawEnumerateExA") { m.ret(3, 0); return true; } // no devices
     }
     if (dll == "dinput8.dll" && name == "DirectInput8Create") {
-        // (hinst, version, riidltf, ppvOut, punkOuter). Decline for now; if RTW
-        // hard-requires DirectInput to reach the menu, the log says so and we
-        // synthesize an IDirectInput8 object next.
-        uint32_t pp = m.arg(3);
-        if (pp) m.write32(pp, 0);
-        std::fprintf(stderr, "sysweb: DirectInput8Create declined\n");
-        m.ret(5, 0x80004001); // E_NOTIMPL
+        // (hinst, version, riidltf, ppvOut, punkOuter) → a fake IDirectInput8 so
+        // RTW's input init succeeds; the devices report no input.
+        if (m.arg(3)) m.write32(m.arg(3), di8(m));
+        m.ret(5, 0); // DI_OK
         return true;
     }
     if (dll == "msvfw32.dll") { // video-for-windows drawing: pretend success
