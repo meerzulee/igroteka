@@ -311,12 +311,23 @@ bool mss32(Machine& m, const std::string& name) {
         }
         return true;
     }
+    // _AIL_init_3D_sample_handle(provider, ...): RTW allocates 3D voices in a
+    // "while (handle != 0) alloc" loop — it keeps requesting voices until the
+    // provider is exhausted. A stub that always returns a nonzero handle makes
+    // that loop run forever (each iteration also grows a voice tree, so it spins
+    // billions of instructions). Hand out a finite pool (a real Miles software
+    // provider offers a few dozen 3D voices), then 0 to end the loop.
+    if (name == "_AIL_init_3D_sample_handle@12") {
+        static uint32_t voices = 0;
+        m.ret(3, voices < 32 ? 0x0A1D3D00u + (++voices) : 0);
+        return true;
+    }
     // Handle-returning opens (nonzero = valid handle). NOTE: _AIL_open_3D_provider
     // is NOT here — it returns an M3DRESULT status where 0 == M3D_NOERR (success),
     // so it falls through to the default 0 return. Returning a fake "handle" there
     // reads as an error code and makes RTW abort 3D-audio init (fatal).
     static const char* kHandles[] = {
-        "_AIL_allocate_sample_handle@4", "_AIL_init_3D_sample_handle@12",
+        "_AIL_allocate_sample_handle@4",
         "_AIL_init_sample@4", "_AIL_init_stream@16", "_AIL_open_3D_listener@4",
         "_AIL_open_digital_driver@16",
         "_AIL_open_filter@8", "_AIL_startup@0"};
