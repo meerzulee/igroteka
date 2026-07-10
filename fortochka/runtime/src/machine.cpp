@@ -509,6 +509,14 @@ int Machine::scheduler_run(uint64_t slice) {
             case Slice::Returned:
                 threads_[pick].st = SchedThread::Done;
                 threads_[pick].exit_code = cpu_.gpr[EAX];
+                // Abandon any mutexes this thread still owned so waiters aren't
+                // stranded forever (Codex finding; we release rather than raise
+                // WAIT_ABANDONED — enough to keep the scheduler from deadlocking).
+                for (Waitable& w : waitables_)
+                    if (w.is_mutex && w.owner == (uint32_t)pick + 1) {
+                        w.owner = 0;
+                        w.recursion = 0;
+                    }
                 if (pick == 0) { exited = true; exit_code = cpu_.gpr[EAX]; }
                 break;
             case Slice::Exited:
