@@ -119,9 +119,16 @@ class Machine {
     static constexpr uint32_t SEH_CHAIN_END = 0xFFFFFFFFu;
 
     // --- guest heap + COM support ---
-    // Guest heap region base (runtime-owned, below the image); a future
-    // k32web VirtualAlloc must avoid [HEAP_BASE, heap watermark).
-    static constexpr uint32_t HEAP_BASE = 0x02000000;
+    // Guest heap region base (runtime-owned). MUST sit ABOVE the loaded image's
+    // virtual end: a real shipped exe like RTW has a huge .bss (RTW's image runs
+    // to VA ~0x2b56000 — 28MB of .data alone), so a heap starting at the old
+    // 0x02000000 grew straight into the program's own globals and silently
+    // corrupted them once the bump watermark climbed past ~0x2100000 (traced:
+    // heap writes clobbered a live global std::vector control block, crashing
+    // deep in unrelated cleanup). 0x03000000 clears RTW's image with margin and
+    // still leaves 464MB of heap inside the 512MB arena. A future k32web
+    // VirtualAlloc must avoid [HEAP_BASE, heap watermark).
+    static constexpr uint32_t HEAP_BASE = 0x03000000;
 
     // Bump-allocate `size` bytes (8-aligned) of guest memory; returns the guest
     // VA. HLE-owned allocations (COM vtables/objects) are never freed — see the

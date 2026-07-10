@@ -416,8 +416,8 @@ Machine::Slice Machine::drive_slice(uint32_t sentinel_slot, uint64_t slice_steps
             }
             case Exit::Fault: {
                 uint32_t sp = cpu_.gpr[ESP];
-                char buf[320];
-                std::snprintf(buf, sizeof buf,
+                char buf[640];
+                int n = std::snprintf(buf, sizeof buf,
                               "cpu fault kind=%d eip=%x bytes=%02x %02x %02x %02x "
                               "esp=%x ebp=%x eax=%x ebx=%x ecx=%x edx=%x esi=%x edi=%x "
                               "esi4=%x stk=[%x %x %x %x %x %x]",
@@ -428,6 +428,16 @@ Machine::Slice Machine::drive_slice(uint32_t sentinel_slot, uint64_t slice_steps
                               cpu_.gpr[ESI], cpu_.gpr[EDI], read32(cpu_.gpr[ESI] + 4),
                               read32(sp), read32(sp + 4), read32(sp + 8), read32(sp + 12),
                               read32(sp + 16), read32(sp + 20));
+                // Walk the ebp frame chain for a backtrace of return addresses.
+                uint32_t fp = cpu_.gpr[EBP];
+                n += std::snprintf(buf + n, sizeof buf - n, " bt=[");
+                for (int i = 0; i < 12 && fp && n < (int)sizeof buf - 16; ++i) {
+                    uint32_t ret = read32(fp + 4), nfp = read32(fp);
+                    n += std::snprintf(buf + n, sizeof buf - n, "%x ", ret);
+                    if (nfp <= fp) break;   // stop if chain isn't ascending
+                    fp = nfp;
+                }
+                std::snprintf(buf + n, sizeof buf - n, "]");
                 throw MachineError{buf};
             }
             case Exit::Steps:
