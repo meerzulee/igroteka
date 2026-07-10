@@ -107,6 +107,48 @@ inline float read_f32_bits(uint32_t u) {
 // Read a guest float from memory.
 inline float read_f32(Machine& m, uint32_t va) { return read_f32_bits(m.read32(va)); }
 
+// Zero a guest struct of exactly `bytes` (never more — writing past a caller's
+// allocation would corrupt adjacent guest memory). write32 is bounds-checked,
+// so an out-of-arena pointer is a no-op, not a host write. `bytes` is a
+// compile-time struct size, always a multiple of 4.
+inline void zero_guest(Machine& m, uint32_t p, uint32_t bytes) {
+    for (uint32_t off = 0; off < bytes; off += 4) m.write32(p + off, 0);
+}
+
+// Fill a D3DDISPLAYMODE {Width, Height, RefreshRate, D3DFORMAT}.
+void fill_display_mode(Machine& m, uint32_t p, uint32_t w, uint32_t h,
+                       uint32_t refresh, uint32_t fmt) {
+    if (!p) return;
+    m.write32(p + 0, w);
+    m.write32(p + 4, h);
+    m.write32(p + 8, refresh);
+    m.write32(p + 12, fmt);
+}
+
+// Forge a D3DCAPS9 (sizeof 304) describing a minimal fixed-function software
+// card: no programmable shaders (Vertex/PixelShaderVersion = 0) so a game that
+// can fall back to the FFP — which our rasterizer implements — does. Only the
+// fields a typical D3D9 app gates on are set; the rest stay zero.
+constexpr uint32_t D3DCAPS9_SIZE = 304;
+void fill_caps(Machine& m, uint32_t p, uint32_t devtype) {
+    if (!p) return;
+    zero_guest(m, p, D3DCAPS9_SIZE);
+    m.write32(p + 0, devtype ? devtype : 1); // DeviceType (D3DDEVTYPE_HAL = 1)
+    m.write32(p + 88, 4096);                 // MaxTextureWidth
+    m.write32(p + 92, 4096);                 // MaxTextureHeight
+    m.write32(p + 100, 8192);                // MaxTextureRepeat
+    m.write32(p + 148, 8);                   // MaxTextureBlendStages
+    m.write32(p + 152, 1);                   // MaxSimultaneousTextures (stage 0 only)
+    m.write32(p + 160, 8);                   // MaxActiveLights
+    m.write32(p + 180, 0x000FFFFF);          // MaxPrimitiveCount
+    m.write32(p + 184, 0x00FFFFFF);          // MaxVertexIndex
+    m.write32(p + 188, 1);                   // MaxStreams
+    m.write32(p + 192, 0x0000FFFF);          // MaxStreamStride
+    m.write32(p + 196, 0);                   // VertexShaderVersion = none → FFP
+    m.write32(p + 204, 0);                   // PixelShaderVersion  = none → FFP
+    m.write32(p + 240, 1);                   // NumSimultaneousRTs
+}
+
 // A vtable slot: the API name (for diagnostics + as the scope document),
 // the stdcall dword count including `this` (so ret() pops correctly), and the
 // handler (null → unimplemented, throws named).
@@ -477,6 +519,32 @@ void dev_set_texture(Machine& m, const Method& mm) {
     if (m.arg(1) == 0) g_state.tex_stage0 = m.arg(2);
     m.ret(mm.nargs, 0);
 }
+void dev_get_device_caps(Machine& m, const Method& mm) {
+    fill_caps(m, m.arg(1), 1); // GetDeviceCaps(this, D3DCAPS9*) — HAL persona
+    m.ret(mm.nargs, 0);
+}
+void dev_get_display_mode(Machine& m, const Method& mm) {
+    // GetDisplayMode(this, iSwapChain, D3DDISPLAYMODE*). 22 = D3DFMT_X8R8G8B8.
+    fill_display_mode(m, m.arg(2), g_state.width, g_state.height, 60, 22);
+    m.ret(mm.nargs, 0);
+}
+void dev_reset(Machine& m, const Method& mm) {
+    // Reset(this, D3DPRESENT_PARAMETERS*): re-apply the backbuffer size and
+    // reseed default render states, exactly as a fresh CreateDevice. Real D3D
+    // also releases all default-pool resources; ours are immortal HLE objects,
+    // so the observable duty here is restoring default state so post-Reset
+    // drawing behaves (Codex noted stale rs[] would otherwise persist).
+    uint32_t pp = m.arg(1);
+    uint32_t w = m.read32(pp + 0), h = m.read32(pp + 4);
+    if (w && w <= 4096) g_state.width = w;
+    if (h && h <= 4096) g_state.height = h;
+    g_state.ensure_bb();
+    g_state.vp_x = g_state.vp_y = 0;
+    g_state.vp_w = (float)g_state.width;
+    g_state.vp_h = (float)g_state.height;
+    seed_render_states(g_state.rs);
+    m.ret(mm.nargs, 0);
+}
 
 // IDirect3DDevice9 vtable in d3d9.h declaration order — POSITION IS THE INDEX.
 // nargs matters only for handled rows; null-fn rows throw before returning.
@@ -486,12 +554,12 @@ constexpr Method kDeviceVtbl[] = {
     {"QueryInterface", 3, com_query_interface}, {"AddRef", 1, com_addref},
     {"Release", 1, com_release}, {"TestCooperativeLevel", 1, ret_ok},
     {"GetAvailableTextureMem", 0, nullptr}, {"EvictManagedResources", 0, nullptr},
-    {"GetDirect3D", 0, nullptr}, {"GetDeviceCaps", 0, nullptr},
-    {"GetDisplayMode", 0, nullptr}, {"GetCreationParameters", 0, nullptr},
+    {"GetDirect3D", 0, nullptr}, {"GetDeviceCaps", 2, dev_get_device_caps},
+    {"GetDisplayMode", 3, dev_get_display_mode}, {"GetCreationParameters", 0, nullptr},
     {"SetCursorProperties", 0, nullptr}, {"SetCursorPosition", 0, nullptr},
     {"ShowCursor", 0, nullptr}, {"CreateAdditionalSwapChain", 0, nullptr},
     {"GetSwapChain", 0, nullptr}, {"GetNumberOfSwapChains", 0, nullptr},
-    {"Reset", 0, nullptr}, {"Present", 5, dev_present},
+    {"Reset", 2, dev_reset}, {"Present", 5, dev_present},
     {"GetBackBuffer", 0, nullptr}, {"GetRasterStatus", 0, nullptr},
     {"SetDialogBoxMode", 0, nullptr}, {"SetGammaRamp", 0, nullptr},
     {"GetGammaRamp", 0, nullptr}, {"CreateTexture", 9, dev_create_texture},
@@ -569,16 +637,62 @@ void d3d9_create_device(Machine& m, const Method& mm) {
     m.write32(ppOut, dev);
     m.ret(mm.nargs, 0);
 }
+// A single-adapter software enumeration surface: one adapter, one 1024x768 mode,
+// every format/device check reported supported (S_OK). Enough for a game's D3D
+// init to pick a device and reach CreateDevice.
+void d3d9_get_adapter_count(Machine& m, const Method& mm) { m.ret(mm.nargs, 1); }
+void d3d9_get_adapter_identifier(Machine& m, const Method& mm) {
+    // GetAdapterIdentifier(this, Adapter, Flags, D3DADAPTER_IDENTIFIER9*).
+    // sizeof(D3DADAPTER_IDENTIFIER9) = 1104 (8-aligned). Zeroed = empty driver/
+    // description strings + null ids; WHQLLevel 1 = validated.
+    uint32_t p = m.arg(3);
+    if (p) {
+        zero_guest(m, p, 1100);
+        m.write32(p + 1096, 1); // WHQLLevel
+    }
+    m.ret(mm.nargs, 0);
+}
+void d3d9_get_adapter_mode_count(Machine& m, const Method& mm) { m.ret(mm.nargs, 1); }
+void d3d9_enum_adapter_modes(Machine& m, const Method& mm) {
+    // EnumAdapterModes(this, Adapter, Format, Mode, D3DDISPLAYMODE*).
+    fill_display_mode(m, m.arg(4), 1024, 768, 60, m.arg(2));
+    m.ret(mm.nargs, 0);
+}
+void d3d9_get_adapter_display_mode(Machine& m, const Method& mm) {
+    // GetAdapterDisplayMode(this, Adapter, D3DDISPLAYMODE*). 22 = D3DFMT_X8R8G8B8.
+    fill_display_mode(m, m.arg(2), 1024, 768, 60, 22);
+    m.ret(mm.nargs, 0);
+}
+void d3d9_check_multisample(Machine& m, const Method& mm) {
+    // CheckDeviceMultiSampleType(..., DWORD* pQualityLevels): one quality level.
+    uint32_t pq = m.arg(6);
+    if (pq) m.write32(pq, 1);
+    m.ret(mm.nargs, 0);
+}
+void d3d9_get_adapter_monitor(Machine& m, const Method& mm) {
+    m.ret(mm.nargs, 1); // a non-null fake HMONITOR
+}
+void d3d9_get_device_caps(Machine& m, const Method& mm) {
+    // GetDeviceCaps(this, Adapter, DeviceType, D3DCAPS9*).
+    fill_caps(m, m.arg(3), m.arg(2));
+    m.ret(mm.nargs, 0);
+}
 
 constexpr Method kD3d9Vtbl[] = {
     {"QueryInterface", 3, com_query_interface}, {"AddRef", 1, com_addref},
     {"Release", 1, com_release}, {"RegisterSoftwareDevice", 0, nullptr},
-    {"GetAdapterCount", 0, nullptr}, {"GetAdapterIdentifier", 0, nullptr},
-    {"GetAdapterModeCount", 0, nullptr}, {"EnumAdapterModes", 0, nullptr},
-    {"GetAdapterDisplayMode", 0, nullptr}, {"CheckDeviceType", 0, nullptr},
-    {"CheckDeviceFormat", 0, nullptr}, {"CheckDeviceMultiSampleType", 0, nullptr},
-    {"CheckDepthStencilMatch", 0, nullptr}, {"CheckDeviceFormatConversion", 0, nullptr},
-    {"GetDeviceCaps", 0, nullptr}, {"GetAdapterMonitor", 0, nullptr},
+    {"GetAdapterCount", 1, d3d9_get_adapter_count},
+    {"GetAdapterIdentifier", 4, d3d9_get_adapter_identifier},
+    {"GetAdapterModeCount", 3, d3d9_get_adapter_mode_count},
+    {"EnumAdapterModes", 5, d3d9_enum_adapter_modes},
+    {"GetAdapterDisplayMode", 3, d3d9_get_adapter_display_mode},
+    {"CheckDeviceType", 6, ret_ok},
+    {"CheckDeviceFormat", 7, ret_ok},
+    {"CheckDeviceMultiSampleType", 7, d3d9_check_multisample},
+    {"CheckDepthStencilMatch", 6, ret_ok},
+    {"CheckDeviceFormatConversion", 5, ret_ok},
+    {"GetDeviceCaps", 4, d3d9_get_device_caps},
+    {"GetAdapterMonitor", 2, d3d9_get_adapter_monitor},
     {"CreateDevice", 7, d3d9_create_device},
 };
 static_assert(sizeof(kD3d9Vtbl) / sizeof(Method) == 17,
