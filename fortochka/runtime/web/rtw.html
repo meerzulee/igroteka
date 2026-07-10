@@ -2,63 +2,87 @@
 <meta charset="utf-8">
 <title>Rome: Total War — Fortochka (browser)</title>
 <style>
-  body { margin: 0; background: #111; color: #ccc; font: 13px/1.5 ui-monospace, monospace; }
+  body { margin: 0; background: #0d0d0d; color: #ccc; font: 13px/1.5 ui-monospace, monospace; }
   header { padding: 8px 14px; background: #1a1a1a; border-bottom: 1px solid #333; }
   header b { color: #6cf; }
-  #wrap { display: flex; justify-content: center; padding: 16px; }
-  canvas { background: #000; image-rendering: pixelated; max-width: 100%; border: 1px solid #333; }
-  #status { padding: 6px 14px; color: #9a9; white-space: pre; }
   .warn { color: #d94; }
+  #main { display: flex; gap: 12px; padding: 12px; align-items: flex-start; flex-wrap: wrap; }
+  canvas { background: #000; image-rendering: pixelated; border: 1px solid #333; max-width: 100%; }
+  #side { flex: 1; min-width: 320px; }
+  #status { padding: 6px 10px; background: #161616; border: 1px solid #333; color: #9c9; margin-bottom: 8px; white-space: pre-wrap; }
+  #log { height: 560px; overflow-y: auto; background: #000; border: 1px solid #333; padding: 8px; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+  #log .e { color: #f66; }
+  #log .g { color: #8c8; }
+  #log .i { color: #79c; }
 </style>
 <header>
-  <b>RomeTW.exe</b> running on the Fortochka from-scratch Win32 + x86 + D3D8 runtime, compiled to WebAssembly.
-  Assets streamed from the local server. <span class="warn">Interpreter — reaching the menu takes minutes.</span>
+  <b>RomeTW.exe</b> on the Fortochka from-scratch Win32 + x86 + D3D8 runtime, compiled to WebAssembly.
+  <span class="warn">Interpreter — the menu takes minutes; watch the log.</span>
 </header>
-<div id="wrap"><canvas id="c" width="1024" height="768"></canvas></div>
-<div id="status">Loading WASM…</div>
+<div id="main">
+  <canvas id="c" width="1024" height="768"></canvas>
+  <div id="side">
+    <div id="status">starting…</div>
+    <div id="log"></div>
+  </div>
+</div>
 <script>
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 const statusEl = document.getElementById('status');
-let img = null, t0 = performance.now();
+const logEl = document.getElementById('log');
+let img = null, t0 = performance.now(), lines = 0;
 
-const worker = new Worker('worker.js');
-worker.onmessage = (e) => {
-  const m = e.data;
-  if (m.type === 'ready') {
-    statusEl.textContent = 'WASM ready — booting RomeTW.exe…';
-    worker.postMessage({
-      type: 'boot',
-      exeURL: '/game-data/RomeTW/RomeTW.exe',
-      assetBase: '/game-data/RomeTW',
-    });
-  } else if (m.type === 'frame') {
-    if (canvas.width !== m.w || canvas.height !== m.h) {
-      canvas.width = m.w; canvas.height = m.h; img = null;
-    }
-    if (!img || img.width !== m.w) img = ctx.createImageData(m.w, m.h);
-    const src = new Uint32Array(m.buf);        // 0xAARRGGBB
-    const dst = new Uint32Array(img.data.buffer); // little-endian RGBA
-    for (let i = 0; i < src.length; i++) {
-      const p = src[i];
-      dst[i] = 0xFF000000 | ((p & 0xFF) << 16) | (p & 0xFF00) | ((p >> 16) & 0xFF);
-    }
-    ctx.putImageData(img, 0, 0);
-    setStatus(m.icount, 'rendering');
-  } else if (m.type === 'progress') {
-    setStatus(m.icount, m.note || 'loading assets');
-  } else if (m.type === 'log') {
-    console.log('[guest] ' + m.line);
-  } else if (m.type === 'done') {
-    statusEl.textContent = 'Process exited (code=' + m.code + ').';
-  } else if (m.type === 'error') {
-    statusEl.textContent = 'Error: ' + m.msg;
-  }
-};
-
+function log(msg, cls) {
+  const el = document.createElement('div');
+  if (cls) el.className = cls;
+  el.textContent = msg;
+  logEl.appendChild(el);
+  if (++lines > 400) logEl.removeChild(logEl.firstChild); // cap
+  logEl.scrollTop = logEl.scrollHeight;
+}
 function setStatus(icount, phase) {
   const secs = ((performance.now() - t0) / 1000).toFixed(0);
-  const b = (icount / 1e9).toFixed(2);
-  statusEl.textContent = `RomeTW.exe — ${phase} · ${b}B guest instructions · ${secs}s elapsed`;
+  statusEl.textContent = `RomeTW.exe — ${phase} · ${(icount / 1e9).toFixed(2)}B guest instructions · ${secs}s`;
+}
+
+log('creating worker…', 'i');
+let worker;
+try {
+  worker = new Worker('worker.js');
+} catch (e) {
+  log('FAILED to create worker: ' + e, 'e');
+}
+
+if (worker) {
+  worker.onerror = (e) => log('WORKER ERROR: ' + (e.message || e) + ' @ ' + (e.filename || '') + ':' + (e.lineno || ''), 'e');
+  worker.onmessageerror = (e) => log('WORKER MSGERROR', 'e');
+  worker.onmessage = (e) => {
+    const m = e.data;
+    switch (m.type) {
+      case 'ready':
+        log('WASM ready — booting RomeTW.exe', 'i');
+        setStatus(0, 'booting');
+        worker.postMessage({ type: 'boot', exeURL: '/game-data/RomeTW/RomeTW.exe', assetBase: '/game-data/RomeTW' });
+        break;
+      case 'frame': {
+        if (canvas.width !== m.w || canvas.height !== m.h) { canvas.width = m.w; canvas.height = m.h; img = null; }
+        if (!img || img.width !== m.w) img = ctx.createImageData(m.w, m.h);
+        const src = new Uint32Array(m.buf);
+        const dst = new Uint32Array(img.data.buffer);
+        for (let i = 0; i < src.length; i++) {
+          const p = src[i];
+          dst[i] = 0xFF000000 | ((p & 0xFF) << 16) | (p & 0xFF00) | ((p >> 16) & 0xFF);
+        }
+        ctx.putImageData(img, 0, 0);
+        setStatus(m.icount, 'rendering');
+        break;
+      }
+      case 'progress': setStatus(m.icount, m.note || 'loading'); break;
+      case 'log': log(m.line, m.line.indexOf('host-load') >= 0 ? 'g' : null); break;
+      case 'done': setStatus(m.icount || 0, 'exited code=' + m.code); log('process exited, code=' + m.code, 'e'); break;
+      case 'error': log('ERROR: ' + m.msg, 'e'); setStatus(0, 'error'); break;
+    }
+  };
 }
 </script>
