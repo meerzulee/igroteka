@@ -66,6 +66,22 @@
              line-height:1.5; color:#000; }
     #crash .btns { display:flex; justify-content:center; gap:8px; padding:10px; }
     a { color:#e8b34b; }
+    /* Debug log panel — shown with ?debug=1 (or localStorage ig-debug=1). Every
+       worker message + error lands here so a death is visible, not silent. */
+    #devlog { display:none; position:fixed; top:0; right:0; bottom:0; width:min(46vw,560px);
+      z-index:20; background:rgba(6,4,2,.92); border-left:1px solid #4a2f18;
+      color:#cdbb9a; font:11px/1.45 ui-monospace, Menlo, monospace; padding:6px 8px;
+      overflow-y:auto; white-space:pre-wrap; word-break:break-all; }
+    #devlog.on { display:block; }
+    #devlog .e { color:#ff7a6b; }
+    #devlog .g { color:#8fd18f; }
+    #devlog .i { color:#79b8e6; }
+    #devlog .t { color:#7a6448; }
+    #devbtn { position:fixed; right:10px; top:10px; z-index:21; width:30px; height:30px;
+      background:rgba(40,26,14,.7); border:1px solid rgba(200,150,70,.4); border-radius:4px;
+      color:#e8d4b0; font-size:14px; line-height:28px; text-align:center; cursor:pointer;
+      opacity:.35; user-select:none; }
+    #devbtn:hover { opacity:1; }
   </style>
 </head>
 <body>
@@ -92,6 +108,8 @@
     <canvas id="canvas" width="1024" height="768" oncontextmenu="event.preventDefault()"></canvas>
   </div>
   <div id="fsbtn" title="Fullscreen">⛶</div>
+  <div id="devbtn" title="Toggle debug log">🐞</div>
+  <div id="devlog"></div>
   <div id="crash">
     <div class="window">
       <div class="title-bar">
@@ -118,6 +136,39 @@ const sub = document.getElementById('sub');
 const fill = document.getElementById('fill');
 const tipEl = document.getElementById('tip');
 let img = null, revealed = false, t0 = performance.now();
+
+// ---- debug log panel (?debug=1 or localStorage ig-debug=1) ----
+const devlog = document.getElementById('devlog');
+const devbtn = document.getElementById('devbtn');
+let IG_DEBUG = new URLSearchParams(location.search).get('debug') === '1'
+  || localStorage.getItem('ig-debug') === '1';
+if (IG_DEBUG) devlog.classList.add('on');
+window.igLogTail = [];                       // last 400 lines, for bug reports
+function dbg(text, cls) {
+  const ts = ((performance.now() - t0) / 1000).toFixed(1);
+  window.igLogTail.push(ts + 's ' + text);
+  if (window.igLogTail.length > 400) window.igLogTail.shift();
+  const row = document.createElement('div');
+  row.innerHTML = '<span class="t">' + ts + 's </span>';
+  const span = document.createElement('span');
+  if (cls) span.className = cls;
+  span.textContent = text;
+  row.appendChild(span);
+  devlog.appendChild(row);
+  while (devlog.childElementCount > 800) devlog.removeChild(devlog.firstChild);
+  devlog.scrollTop = devlog.scrollHeight;
+  if (IG_DEBUG) console.log('[rtw] ' + text);
+}
+devbtn.onclick = () => {
+  IG_DEBUG = !IG_DEBUG;
+  devlog.classList.toggle('on', IG_DEBUG);
+  localStorage.setItem('ig-debug', IG_DEBUG ? '1' : '0');
+};
+addEventListener('error', (e) => dbg('window error: ' + (e.message || e) +
+  (e.filename ? ' @ ' + e.filename + ':' + e.lineno : ''), 'e'));
+addEventListener('unhandledrejection', (e) =>
+  dbg('unhandled rejection: ' + (e.reason && e.reason.message || e.reason || e), 'e'));
+dbg('page loaded; worker starting', 'i');
 
 // ---- fullscreen ----
 const fsbtn = document.getElementById('fsbtn');
@@ -185,16 +236,21 @@ try { worker = new Worker('worker.js'); }
 catch (e) { showDialog('Rome: Total War could not start a worker.<br><br><span style="color:#555">' + e + '</span>', { reload: true }); }
 
 if (worker) {
-  worker.onerror = (e) => showDialog(
-    'Rome: Total War has encountered a problem and needs to close.<br><br><span style="color:#555">' +
-    (e.message || e) + '</span>', { reload: true });
+  worker.onerror = (e) => {
+    dbg('worker.onerror: ' + (e.message || e) + (e.filename ? ' @ ' + e.filename + ':' + e.lineno : ''), 'e');
+    showDialog(
+      'Rome: Total War has encountered a problem and needs to close.<br><br><span style="color:#555">' +
+      (e.message || e) + '</span>', { reload: true });
+  };
   worker.onmessage = (e) => {
     const m = e.data;
     switch (m.type) {
       case 'ready':
         msg.textContent = 'Booting the engine…';
+        dbg('WASM + OPFS ready — booting RomeTW.exe', 'i');
         break;
       case 'needimport':
+        dbg('needimport: ' + (m.msg || ''), 'e');
         showDialog(
           'Rome: Total War could not start because your game files were not found ' +
           'on this device.<br><br>Install your <b>Rome: Total War</b> folder (the one ' +
@@ -213,6 +269,7 @@ if (worker) {
           dst[i] = 0xFF000000 | ((p & 0xFF) << 16) | (p & 0xFF00) | ((p >> 16) & 0xFF);
         }
         ctx.putImageData(img, 0, 0);
+        if (!revealed) dbg('first frame — rendering (' + m.w + 'x' + m.h + ')', 'g');
         hideLoader();
         sub.textContent = (m.icount / 1e9).toFixed(2) + 'B instructions';
         break;
@@ -220,22 +277,32 @@ if (worker) {
       case 'progress': {
         const secs = ((performance.now() - t0) / 1000).toFixed(0);
         sub.textContent = (m.icount / 1e9).toFixed(2) + 'B instructions · ' + secs + 's';
-        // crude progress feel: asymptotic bar toward 95% over the load
         const pct = Math.min(95, (m.icount / 14e9) * 100);
         fill.style.width = pct + '%';
+        if (m.note) dbg('progress: ' + m.note, 'i');
         break;
       }
       case 'log':
+        dbg(m.line);
         if (/loading|load data|load RomeTW/i.test(m.line)) {
           const f = m.line.replace(/^.*load\s+/i, '').split('(')[0].trim();
           if (f) msg.textContent = 'Loading ' + f.slice(0, 48) + '…';
         }
         break;
       case 'done':
-        if (m.code === 0) location.href = '../../';        // clean exit -> desktop
-        else showDialog('Rome: Total War exited (code ' + m.code + ').', { reload: true });
+        dbg('process exited, code=' + m.code + ' @ ' + (m.icount / 1e9).toFixed(2) + 'B instructions',
+            (revealed && m.code === 0) ? 'g' : 'e');
+        // A clean quit (code 0 AFTER the game was on screen) returns to the
+        // desktop. Exiting BEFORE any frame = a load-time death: show it, don't
+        // silently bounce to the desktop (that hid every failure until now).
+        if (revealed && m.code === 0) location.href = '../../';
+        else showDialog(
+          'Rome: Total War stopped during load (exit code ' + m.code + ' at ' +
+          (m.icount / 1e9).toFixed(2) + 'B instructions).<br><br>Open the debug log ' +
+          '(🐞, top-right) or reload with <b>?debug=1</b> to see where.', { reload: true });
         break;
       case 'error':
+        dbg('ERROR: ' + m.msg, 'e');
         showDialog(
           'Rome: Total War has encountered a problem and needs to close.<br><br>' +
           '<span style="color:#555">' + m.msg + '</span>', { reload: true });
