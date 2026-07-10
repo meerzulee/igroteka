@@ -166,6 +166,36 @@ bool wsock32(Machine& m, const std::string& canon) {
     return false;
 }
 
+// mss32 (Miles Sound System) — audio-off stubs. Every export is __stdcall with
+// the decorated name _AIL_xxx@N, where N is the argument byte count, so
+// nargs = N/4 comes straight off the @N decoration. Opens return a fixed fake
+// handle so RTW believes audio initialized; status queries report "done" so
+// the game never waits on a sound finishing; everything else returns 0.
+int decorated_nargs(const std::string& name) {
+    size_t at = name.rfind('@');
+    if (at == std::string::npos) return 0;
+    return std::atoi(name.c_str() + at + 1) / 4;
+}
+
+bool mss32(Machine& m, const std::string& name) {
+    if (name.rfind("_AIL_", 0) != 0) return false;
+    static const char* kHandles[] = {
+        "_AIL_allocate_sample_handle@4", "_AIL_init_3D_sample_handle@12",
+        "_AIL_init_sample@4", "_AIL_init_stream@16", "_AIL_open_3D_listener@4",
+        "_AIL_open_3D_provider@4", "_AIL_open_digital_driver@16",
+        "_AIL_open_filter@8", "_AIL_startup@0"};
+    static const char* kStatus[] = {
+        "_AIL_3D_sample_status@4", "_AIL_sample_status@4", "_AIL_stream_status@4"};
+    uint32_t retval = 0;
+    for (auto h : kHandles)
+        if (name == h) { retval = 0x0A1D0001u; break; }
+    if (retval == 0)
+        for (auto s : kStatus)
+            if (name == s) { retval = 2; break; }
+    m.ret(decorated_nargs(name), retval);
+    return true;
+}
+
 } // namespace
 
 void install(Machine& m) {
@@ -180,6 +210,7 @@ void install(Machine& m) {
             const char* ord = wsock_ordinal(name);
             return wsock32(m, ord ? ord : name);
         }
+        if (dll == "mss32.dll") return mss32(m, name);
         return false;
     });
 }
