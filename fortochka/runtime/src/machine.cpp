@@ -211,7 +211,7 @@ int Machine::run_entry(uint64_t step_budget) {
     for (uint32_t cb : image_.tls_callbacks)
         call_guest(cb, {image_.base, 1 /*DLL_PROCESS_ATTACH*/, 0}, step_budget);
 
-    return scheduler_run(kThreadSliceSteps);
+    return scheduler_run(kThreadSliceSteps, step_budget);
 }
 
 uint32_t Machine::call_guest(uint32_t func_va, const std::vector<uint32_t>& args,
@@ -449,7 +449,7 @@ Machine::Slice Machine::drive_slice(uint32_t sentinel_slot, uint64_t slice_steps
     }
 }
 
-int Machine::scheduler_run(uint64_t slice) {
+int Machine::scheduler_run(uint64_t slice, uint64_t budget) {
     if (sched_active_) throw MachineError{"scheduler re-entered"};
     sched_active_ = true;
     struct Guard {
@@ -463,6 +463,7 @@ int Machine::scheduler_run(uint64_t slice) {
 
         for (;;) {
         if (exited) return (int)exit_code;
+        if (proc_icount_ >= budget) return (int)exit_code; // step budget reached
 
         // 1. Complete any parked waits whose objects are now available. The ret
         //    frame is unwound on the blocked thread's own CPU state.

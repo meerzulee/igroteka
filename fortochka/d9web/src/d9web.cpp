@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -247,6 +248,27 @@ void dev_clear(Machine& m, const Method& mm) {
 }
 void dev_present(Machine& m, const Method& mm) {
     g_state.presented = true;
+    // Debug proof capture: write the FIRST presented frame to a PPM if the env
+    // var names a path (native zhrun only; costs nothing when unset).
+    static bool dumped = false;
+    if (!dumped) {
+        const char* p = std::getenv("ZHWEB_DUMP_FIRST");
+        if (p && *p && !g_state.backbuffer.empty()) {
+            dumped = true;
+            if (FILE* f = std::fopen(p, "wb")) {
+                std::fprintf(f, "P6\n%u %u\n255\n", g_state.width, g_state.height);
+                for (uint32_t px : g_state.backbuffer) {
+                    unsigned char rgb[3] = {(unsigned char)(px >> 16),
+                                            (unsigned char)(px >> 8),
+                                            (unsigned char)px};
+                    std::fwrite(rgb, 1, 3, f);
+                }
+                std::fclose(f);
+                std::fprintf(stderr, "d9web: dumped first %ux%u frame to %s\n",
+                             g_state.width, g_state.height, p);
+            }
+        }
+    }
     m.ret(mm.nargs, 0);
 }
 void dev_set_fvf(Machine& m, const Method& mm) {

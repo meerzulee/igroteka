@@ -188,7 +188,7 @@ class Machine {
     // completing parked waits between slices, until the process exits. Replaces
     // the top-level drive() in run_entry. NON-RECURSIVE (asserts !sched_active_).
     enum class Slice { Returned, Blocked, Sliced, Exited };
-    int scheduler_run(uint64_t slice_steps);
+    int scheduler_run(uint64_t slice_steps, uint64_t budget = UINT64_MAX);
     Slice drive_slice(uint32_t sentinel_slot, uint64_t slice_steps);
     bool wait_satisfied(SchedThread& t, uint32_t& which); // which = result on success
     Waitable* waitable(uint32_t handle);

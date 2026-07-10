@@ -539,6 +539,14 @@ inline void fcompare(Cpu& c, double a, double b) {
     else if (a == b) sw |= X87_C3;
     else sw |= X87_C0 | X87_C2 | X87_C3; // unordered (NaN)
 }
+// FCOMI/FUCOMI: compare and set EFLAGS (ZF/PF/CF) directly (P6+). Mapping:
+// greater→000, less→CF, equal→ZF, unordered→ZF|PF|CF.
+inline void fcomi(Cpu& c, double a, double b) {
+    c.eflags &= ~(FLAG_ZF | FLAG_PF | FLAG_CF);
+    if (std::isnan(a) || std::isnan(b)) c.eflags |= FLAG_ZF | FLAG_PF | FLAG_CF;
+    else if (a < b) c.eflags |= FLAG_CF;
+    else if (a == b) c.eflags |= FLAG_ZF;
+}
 
 // idx selects the arithmetic op (matches the reg field of D8/DC/DE):
 // 0 add,1 mul,2 com,3 comp,4 sub,5 subr,6 div,7 divr. Returns the result of
@@ -713,6 +721,17 @@ void execX87(Cpu& c, const Bus& b, const Inst& in) {
                         case 0: fst(c, 0) = -fst(c, 0); return;            // fchs
                         case 1: fst(c, 0) = std::fabs(fst(c, 0)); return;  // fabs
                         case 4: fcompare(c, fst(c, 0), 0.0); return;       // ftst
+                        case 5: { // fxam: classify st(0) into C3/C2/C0, C1=sign
+                            double v = fst(c, 0);
+                            uint16_t& sw = c.x87.status;
+                            sw &= ~0x4700;                       // clear C3,C2,C1,C0
+                            if (std::signbit(v)) sw |= 0x0200;   // C1 = sign
+                            if (std::isnan(v)) sw |= 0x0100;               // C0     → NaN
+                            else if (std::isinf(v)) sw |= 0x0500;          // C2|C0  → inf
+                            else if (v == 0.0) sw |= 0x4000;               // C3     → zero
+                            else sw |= 0x0400;                             // C2     → normal
+                            return;
+                        }
                     }
                     throw UdFault{};
                 case 5: // D9 E8..EE: load constants
@@ -779,17 +798,37 @@ void execX87(Cpu& c, const Bus& b, const Inst& in) {
                 case 5: fcompare(c, fst(c, 0), fst(c, i)); fpop(c); return; // fucomp
             }
             throw UdFault{};
+        case 0xDA: // register: FCMOVcc (move st(i)→st(0) if cc) / fucompp
+            switch (reg) {
+                case 0: if (c.eflags & FLAG_CF) fst(c, 0) = fst(c, i); return;   // fcmovb
+                case 1: if (c.eflags & FLAG_ZF) fst(c, 0) = fst(c, i); return;   // fcmove
+                case 2: if (c.eflags & (FLAG_CF | FLAG_ZF)) fst(c, 0) = fst(c, i); return; // fcmovbe
+                case 3: if (c.eflags & FLAG_PF) fst(c, 0) = fst(c, i); return;   // fcmovu
+                case 5: if (i == 1) { // DA E9 = fucompp
+                            fcompare(c, fst(c, 0), fst(c, 1)); fpop(c); fpop(c); return; }
+                        break;
+            }
+            throw UdFault{};
         case 0xDB:
-            // DB E0..E4: fneni/fndisi/fnclex/fninit/fnsetpm (no-ops or init).
-            if (reg == 4) {
-                if (i == 3) { c.x87 = X87{}; c.x87.used = true; } // fninit
-                return; // fnclex and the obsolete ones: no-op
+            switch (reg) {
+                case 0: if (!(c.eflags & FLAG_CF)) fst(c, 0) = fst(c, i); return; // fcmovnb
+                case 1: if (!(c.eflags & FLAG_ZF)) fst(c, 0) = fst(c, i); return; // fcmovne
+                case 2: if (!(c.eflags & (FLAG_CF | FLAG_ZF))) fst(c, 0) = fst(c, i); return; // fcmovnbe
+                case 3: if (!(c.eflags & FLAG_PF)) fst(c, 0) = fst(c, i); return; // fcmovnu
+                case 4: // DB E0..E4: fneni/fndisi/fnclex/fninit/fnsetpm
+                    if (i == 3) { c.x87 = X87{}; c.x87.used = true; } // fninit
+                    return; // fnclex and the obsolete ones: no-op
+                case 5: fcomi(c, fst(c, 0), fst(c, i)); return;      // fucomi
+                case 6: fcomi(c, fst(c, 0), fst(c, i)); return;      // fcomi
             }
             throw UdFault{};
         case 0xDF:
-            if (reg == 4 && i == 0) { // DF E0 = fnstsw ax
-                c.gpr[EAX] = (c.gpr[EAX] & 0xFFFF0000u) | c.x87.status;
-                return;
+            switch (reg) {
+                case 4: if (i == 0) { // DF E0 = fnstsw ax
+                            c.gpr[EAX] = (c.gpr[EAX] & 0xFFFF0000u) | c.x87.status; return; }
+                        break;
+                case 5: fcomi(c, fst(c, 0), fst(c, i)); fpop(c); return; // fucomip
+                case 6: fcomi(c, fst(c, 0), fst(c, i)); fpop(c); return; // fcomip
             }
             throw UdFault{};
     }
