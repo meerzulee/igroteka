@@ -25,26 +25,12 @@ node_modules/
 compile_commands.json
 .gstack/
 
-# Nested repos with their own git history:
-# - zh-web: GPL fork of GeneralsGameCode (Igroteka wasm branch)
-# - dvijoke: the Dvijoke engine repo (github.com/meerzulee/dvijoke)
-zh-web/
-dvijoke/
-
 # Site: engine builds are deploy artifacts (GPL wasm — publish only once the
-# engine fork source is public); gamedata is a local dev symlink
+# engine fork source is public); gamedata is a local dev symlink.
+# Engine SOURCE now lives in sibling repos: zhelezo, fortochka, zh-web, dvijoke.
 site/play/zh/GeneralsXZH.js
 site/play/zh/GeneralsXZH.wasm
 site/gamedata
-
-# Fortochka: build artifacts
-fortochka/**/build*/
-fortochka/corpus/bin/
-fortochka/**/*.o
-fortochka/**/bench/*.bin
-
-# Fortochka: web build artifacts
-build-web/
 
 # Cafe: local secrets for wrangler dev
 .dev.vars
