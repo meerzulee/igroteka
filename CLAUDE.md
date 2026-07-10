@@ -9,6 +9,26 @@ architecture, `PLAN.md` for the current execution plan and phase status.
 - **Reviews go through Codex.** For any design/correctness second opinion, route it to
   Codex (`/codex:rescue`), not the built-in `advisor` tool. Give it adversarial,
   file:line-scoped prompts; it diagnoses, we apply. (Standing user preference.)
+  Preferred Codex model is `gpt-5.6`; it is **not enabled on the current
+  Codex/ChatGPT account** (rejected: "not supported when using Codex with a
+  ChatGPT account"), so use the default Codex model until the account gains it —
+  do not keep retrying `--model gpt-5.6`.
+
+## Model routing (standing user preference)
+
+- **Default model is Fable 5.** The user sets it via `/model`. Fable sometimes
+  auto-escalates to Opus 4.8 for heavy work; that switch is a harness behavior,
+  not something to fight from inside a turn.
+- **Delegate neutral / mechanical work to Fable subagents** (`Agent` with
+  `model: "fable"`): writing corpus rungs, mechanical HLE stub batches, byte-
+  layout fills, rote refactors, search/enumeration. Fable is terse and fast and
+  should not refuse this work — it is a lawful, user-owned game-porting project
+  (DRM-free GOG assets, MIT runtime written from scratch). Give it clean,
+  self-contained specs.
+- Keep on the main model (Opus/whatever the session resolves to): security-
+  sensitive judgment, the threading/scheduler design, license-boundary calls,
+  and anything where a wrong stub silently corrupts the guest.
+- Advice/review still routes to **Codex**, never the `advisor` tool.
 - **Never commit game assets.** `*.big` and `game-data/` are gitignored on purpose —
   they are EA's copyrighted data. Users bring their own files at runtime (OPFS).
 - **License boundary:** `d8web/` is MIT and must stay engine-free — no code from the
