@@ -12,7 +12,7 @@
                  font: 13px/1.5 "Segoe UI", Roboto, sans-serif; }
     #stage { display:flex; justify-content:center; align-items:center;
              min-height:100vh; padding:14px; box-sizing:border-box; }
-    canvas { background:#000; image-rendering:auto; }
+    canvas { background:#000; image-rendering:auto; cursor:url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2724%27 height=%2724%27%3E%3Cpath d=%27M2 1 L2 18 L7 14.5 L10 21.5 L13.2 20.2 L10.4 13.4 L16 13 Z%27 fill=%27%23d9a520%27 stroke=%27%234a3208%27 stroke-width=%271.2%27/%3E%3C/svg%3E") 2 1, auto; } /* game draws its own cursor */
     #fsbtn { position:fixed; right:10px; bottom:10px; z-index:4; width:34px; height:34px;
       background:rgba(40,26,14,.55); border:1px solid rgba(200,150,70,.4); border-radius:4px;
       color:#e8d4b0; font-size:18px; line-height:32px; text-align:center; cursor:pointer;
@@ -82,6 +82,11 @@
       color:#e8d4b0; font-size:14px; line-height:28px; text-align:center; cursor:pointer;
       opacity:.35; user-select:none; }
     #devbtn:hover { opacity:1; }
+    /* FPS overlay — GPU frames per second, top-left of the stage */
+    #fps { display:none; position:fixed; left:10px; top:10px; z-index:4;
+      padding:2px 8px; background:rgba(40,26,14,.7); border:1px solid rgba(200,150,70,.4);
+      border-radius:4px; color:#e8d4b0; font:12px/1.6 ui-monospace, Menlo, monospace;
+      font-variant-numeric:tabular-nums; pointer-events:none; }
   </style>
 </head>
 <body>
@@ -106,9 +111,11 @@
   </div>
   <div id="stage">
     <canvas id="canvas" width="1024" height="768" oncontextmenu="event.preventDefault()"></canvas>
+    <canvas id="canvas-gl" width="1024" height="768" style="display:none" oncontextmenu="event.preventDefault()"></canvas>
   </div>
   <div id="fsbtn" title="Fullscreen">⛶</div>
   <div id="devbtn" title="Toggle debug log">🐞</div>
+  <div id="fps"></div>
   <div id="devlog"></div>
   <div id="crash">
     <div class="window">
@@ -129,13 +136,16 @@
 
 <script>
 const canvas = document.getElementById('canvas');
+const glCanvas = document.getElementById('canvas-gl'); // GPU output — transferred to the worker
 const ctx = canvas.getContext('2d', { alpha: false });
 const loader = document.getElementById('loader');
 const msg = document.getElementById('msg');
 const sub = document.getElementById('sub');
 const fill = document.getElementById('fill');
 const tipEl = document.getElementById('tip');
-let img = null, revealed = false, t0 = performance.now();
+const fpsEl = document.getElementById('fps');
+let img = null, revealed = false, gpuShown = false, t0 = performance.now();
+let gpuFrames = 0, gpuFramesPrev = 0;
 
 // ---- debug log panel (?debug=1 or localStorage ig-debug=1) ----
 const devlog = document.getElementById('devlog');
@@ -190,6 +200,9 @@ function fitCanvas() {
   if (h > availH) { h = availH; w = h * ratio; }
   canvas.style.width = Math.round(w) + 'px';
   canvas.style.height = Math.round(h) + 'px';
+  // The GL canvas mirrors the CSS size; its backing size is set by the wasm.
+  glCanvas.style.width = canvas.style.width;
+  glCanvas.style.height = canvas.style.height;
 }
 fitCanvas();
 addEventListener('resize', fitCanvas);
@@ -237,6 +250,73 @@ try { worker = new Worker('worker.js' + (IG_DEBUG ? '?verbose=1' : '')); }
 catch (e) { showDialog('Rome: Total War could not start a worker.<br><br><span style="color:#555">' + e + '</span>', { reload: true }); }
 
 if (worker) {
+  // Hand the GPU canvas to the worker (WebGL2 path). Browsers without
+  // transferControlToOffscreen silently keep the software renderer.
+  try {
+    const off = glCanvas.transferControlToOffscreen();
+    worker.postMessage({ type: 'canvas', canvas: off }, [off]);
+  } catch (err) { dbg('no OffscreenCanvas transfer (software path): ' + err, 'i'); }
+  // Forward pointer input to the worker in backbuffer coords: map through the
+  // visible canvas's on-screen rect (fitCanvas gives it a CSS size different
+  // from its width/height attributes) back to the attribute size. pointermove
+  // is throttled to one message per animation frame; down/up go out
+  // immediately. b = e.buttons bit0 left, bit1 right (the canvases' inline
+  // oncontextmenu already keeps right-click away from the browser menu). The
+  // worker drops these until the game has booted.
+  let mousePending = null, mouseRaf = 0;
+  function mouseMsg(e) {
+    const el = gpuShown ? glCanvas : canvas;
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    return { type: 'mouse',
+      x: Math.max(0, Math.min(el.width - 1, Math.round((e.clientX - r.left) * el.width / r.width))),
+      y: Math.max(0, Math.min(el.height - 1, Math.round((e.clientY - r.top) * el.height / r.height))),
+      b: e.buttons & 3 };
+  }
+  for (const el of [canvas, glCanvas]) {
+    el.addEventListener('pointermove', (e) => {
+      mousePending = mouseMsg(e);
+      if (mousePending && !mouseRaf) mouseRaf = requestAnimationFrame(() => {
+        mouseRaf = 0;
+        if (mousePending) { worker.postMessage(mousePending); mousePending = null; }
+      });
+    });
+    el.addEventListener('pointerdown', (e) => {
+      try { el.setPointerCapture(e.pointerId); } catch (err) { /* keep going uncaptured */ }
+      const m = mouseMsg(e);
+      if (m) worker.postMessage(m);
+    });
+    el.addEventListener('pointerup', (e) => {
+      const m = mouseMsg(e);
+      if (m) worker.postMessage(m);
+    });
+  }
+  // Forward keyboard input as Windows virtual-key codes (e.keyCode IS the VK
+  // code for letters/digits/F-keys/arrows/Escape/Enter/Space). Repeat keydowns
+  // go through (games expect auto-repeat WM_KEYDOWN); ch carries the WM_CHAR
+  // code on keydown only. Meta/ctrl chords stay with the browser (Cmd+R etc),
+  // and keys the browser would act on (space/arrows scroll, Tab, F-keys,
+  // paging) are only swallowed when the page itself — not an input — has
+  // focus. The worker drops these until the game has booted.
+  const keySwallow = /^( |Tab|Arrow(Up|Down|Left|Right)|Page(Up|Down)|Home|End|F\d{1,2})$/;
+  function keyEvent(e, down) {
+    if (e.metaKey || e.ctrlKey) return; // browser shortcuts keep working
+    if (keySwallow.test(e.key) && (e.target === document.body || e.target.tagName === 'CANVAS'))
+      e.preventDefault();
+    const ch = down ? (e.key.length === 1 ? e.key.charCodeAt(0)
+      : e.key === 'Enter' ? 13 : e.key === 'Backspace' ? 8
+      : e.key === 'Tab' ? 9 : e.key === 'Escape' ? 27 : 0) : 0;
+    worker.postMessage({ type: 'key', vk: e.keyCode, down: down ? 1 : 0, ch });
+  }
+  addEventListener('keydown', (e) => keyEvent(e, 1));
+  addEventListener('keyup', (e) => keyEvent(e, 0));
+  // FPS overlay: once a second, show the delta of the worker's gpuFrames counter.
+  setInterval(() => {
+    if (gpuFrames <= 0) return; // hidden until the GPU path presents
+    fpsEl.style.display = 'block';
+    fpsEl.textContent = (gpuFrames - gpuFramesPrev) + ' fps';
+    gpuFramesPrev = gpuFrames;
+  }, 1000);
   worker.onerror = (e) => {
     dbg('worker.onerror: ' + (e.message || e) + (e.filename ? ' @ ' + e.filename + ':' + e.lineno : ''), 'e');
     showDialog(
@@ -246,6 +326,17 @@ if (worker) {
   worker.onmessage = (e) => {
    try {
     const m = e.data;
+    if (typeof m.gpuFrames === 'number') gpuFrames = m.gpuFrames;
+    // Once the wasm presents GPU frames into the OffscreenCanvas, swap the GL
+    // canvas in and retire the 2D (software) one — a one-time switch. GPU
+    // frames mean the game is on screen, so drop the loader too.
+    if (!gpuShown && m.gpuFrames > 0) {
+      gpuShown = true;
+      glCanvas.style.display = '';
+      canvas.style.display = 'none';
+      dbg('GPU path active — switched to WebGL2 canvas', 'g');
+      hideLoader();
+    }
     switch (m.type) {
       case 'ready':
         msg.textContent = 'Booting the engine…';
