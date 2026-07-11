@@ -271,9 +271,13 @@ function hideLoader() {
 // Browser JIT opt-in (?jit=1 on this page): forwarded on the worker's query
 // string, which passes it to the wasm via zhweb_set_jit before boot/restore.
 const IG_JIT = new URLSearchParams(location.search).get('jit') === '1';
+// ?snap=campaign restores rtw.campaign.snap.gz (straight onto the strat map)
+// instead of the menu snapshot; anything else keeps the default.
+const IG_SNAP = new URLSearchParams(location.search).get('snap') || '';
 const workerQS = new URLSearchParams();
 if (IG_DEBUG) workerQS.set('verbose', '1');
 if (IG_JIT) workerQS.set('jit', '1');
+if (IG_SNAP) workerQS.set('snap', IG_SNAP);
 let worker;
 try { worker = new Worker('worker.js' + (workerQS.toString() ? '?' + workerQS.toString() : '')); }
 catch (e) { showDialog('Rome: Total War could not start a worker.<br><br><span style="color:#555">' + e + '</span>', { reload: true }); }
