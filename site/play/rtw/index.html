@@ -159,11 +159,17 @@ if (IG_DEBUG) devlog.classList.add('on');
 window.igLogTail = [];                       // last 400 lines, for bug reports
 // Lines worth copy-pasting into a bug report: JIT, GPU/RTT, heap, build stamp.
 const DIAG_RE = /SetRenderTarget|FBO|d8web|jit:|machine:|zhweb:|heap exhausted|cpu fault/;
+window.igDiagTail = []; // diagnostic lines only — kept separately so early
+                        // one-shot logs (first SetRenderTarget/FBO) survive
 let buildId = '';
 function dbg(text, cls) {
   const ts = ((performance.now() - t0) / 1000).toFixed(1);
   window.igLogTail.push(ts + 's ' + text);
   if (window.igLogTail.length > 400) window.igLogTail.shift();
+  if (DIAG_RE.test(text)) {
+    window.igDiagTail.push(ts + 's ' + text);
+    if (window.igDiagTail.length > 600) window.igDiagTail.splice(0, 100);
+  }
   const m = /^zhweb: build (\S+)/.exec(text);
   if (m) { buildId = m[1]; fpsEl.style.display = 'block'; fpsEl.textContent = buildId; }
   if (!cls && DIAG_RE.test(text)) cls = 'd';
@@ -185,7 +191,7 @@ devbtn.onclick = () => {
 };
 const diagbtn = document.getElementById('diagbtn');
 diagbtn.onclick = () => {
-  const lines = window.igLogTail.filter((l) => DIAG_RE.test(l));
+  const lines = window.igDiagTail;
   navigator.clipboard.writeText(lines.join('\n')).then(() => {
     diagbtn.textContent = '✓';
     setTimeout(() => { diagbtn.textContent = '📋'; }, 1200);
