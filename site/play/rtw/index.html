@@ -77,6 +77,8 @@
     #devlog .g { color:#8fd18f; }
     #devlog .i { color:#79b8e6; }
     #devlog .t { color:#7a6448; }
+    /* diagnostic lines (jit/gpu/heap) — highlighted for quick copy-paste */
+    #devlog .d { color:#ffd479; background:rgba(255,212,121,.09); }
     #devbtn { position:fixed; right:10px; top:10px; z-index:21; width:30px; height:30px;
       background:rgba(40,26,14,.7); border:1px solid rgba(200,150,70,.4); border-radius:4px;
       color:#e8d4b0; font-size:14px; line-height:28px; text-align:center; cursor:pointer;
@@ -115,6 +117,7 @@
   </div>
   <div id="fsbtn" title="Fullscreen">⛶</div>
   <div id="devbtn" title="Toggle debug log">🐞</div>
+  <div id="diagbtn" title="Copy diagnostic lines (jit/gpu/heap)" style="position:fixed;right:10px;top:46px;z-index:21;width:30px;height:30px;background:rgba(40,26,14,.7);border:1px solid rgba(200,150,70,.4);border-radius:4px;color:#e8d4b0;font-size:14px;line-height:28px;text-align:center;cursor:pointer;opacity:.35;user-select:none">📋</div>
   <div id="fps"></div>
   <div id="devlog"></div>
   <div id="crash">
@@ -154,10 +157,16 @@ let IG_DEBUG = new URLSearchParams(location.search).get('debug') === '1'
   || localStorage.getItem('ig-debug') === '1';
 if (IG_DEBUG) devlog.classList.add('on');
 window.igLogTail = [];                       // last 400 lines, for bug reports
+// Lines worth copy-pasting into a bug report: JIT, GPU/RTT, heap, build stamp.
+const DIAG_RE = /SetRenderTarget|FBO|d8web|jit:|machine:|zhweb:|heap exhausted|cpu fault/;
+let buildId = '';
 function dbg(text, cls) {
   const ts = ((performance.now() - t0) / 1000).toFixed(1);
   window.igLogTail.push(ts + 's ' + text);
   if (window.igLogTail.length > 400) window.igLogTail.shift();
+  const m = /^zhweb: build (\S+)/.exec(text);
+  if (m) { buildId = m[1]; fpsEl.style.display = 'block'; fpsEl.textContent = buildId; }
+  if (!cls && DIAG_RE.test(text)) cls = 'd';
   const row = document.createElement('div');
   row.innerHTML = '<span class="t">' + ts + 's </span>';
   const span = document.createElement('span');
@@ -173,6 +182,14 @@ devbtn.onclick = () => {
   IG_DEBUG = !IG_DEBUG;
   devlog.classList.toggle('on', IG_DEBUG);
   localStorage.setItem('ig-debug', IG_DEBUG ? '1' : '0');
+};
+const diagbtn = document.getElementById('diagbtn');
+diagbtn.onclick = () => {
+  const lines = window.igLogTail.filter((l) => DIAG_RE.test(l));
+  navigator.clipboard.writeText(lines.join('\n')).then(() => {
+    diagbtn.textContent = '✓';
+    setTimeout(() => { diagbtn.textContent = '📋'; }, 1200);
+  });
 };
 addEventListener('error', (e) => dbg('window error: ' + (e.message || e) +
   (e.filename ? ' @ ' + e.filename + ':' + e.lineno : '') +
@@ -318,9 +335,10 @@ if (worker) {
   addEventListener('keyup', (e) => keyEvent(e, 0));
   // FPS overlay: once a second, show the delta of the worker's gpuFrames counter.
   setInterval(() => {
-    if (gpuFrames <= 0) return; // hidden until the GPU path presents
+    if (gpuFrames <= 0) return; // build id only until the GPU path presents
     fpsEl.style.display = 'block';
-    fpsEl.textContent = (gpuFrames - gpuFramesPrev) + ' fps';
+    fpsEl.textContent = (buildId ? buildId + ' · ' : '') +
+                        (gpuFrames - gpuFramesPrev) + ' fps';
     gpuFramesPrev = gpuFrames;
   }, 1000);
   worker.onerror = (e) => {
