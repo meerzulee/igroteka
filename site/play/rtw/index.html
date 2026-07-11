@@ -381,6 +381,10 @@ if (worker) {
           { setup: true });
         break;
       case 'frame': {
+        // GPU path active → the 2D canvas is hidden; skip the per-pixel swizzle
+        // and putImageData into it (the worker stops sending frames too — this
+        // guards the boundary slices).
+        if (gpuShown) { sub.textContent = (m.icount / 1e9).toFixed(2) + 'B instructions'; break; }
         if (canvas.width !== m.w || canvas.height !== m.h) {
           canvas.width = m.w; canvas.height = m.h; img = null; fitCanvas();
         }
