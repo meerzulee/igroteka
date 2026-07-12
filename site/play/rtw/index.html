@@ -309,7 +309,7 @@ if (worker) {
   const IG_LOCK = new URLSearchParams(location.search).get('lock') === '1';
   const locked = () => document.pointerLockElement === canvas ||
                        document.pointerLockElement === glCanvas;
-  let relDx = 0, relDy = 0, relB = 0, relRaf = 0;
+  let relDx = 0, relDy = 0, relB = 0, relRaf = 0, lastLockTry = -1e9;
   function relFlush() {
     relRaf = 0;
     const dx = Math.round(relDx), dy = Math.round(relDy);
@@ -346,7 +346,17 @@ if (worker) {
     });
     el.addEventListener('pointerdown', (e) => {
       if (IG_LOCK && !locked()) {
-        try { el.requestPointerLock(); } catch (err) { /* fall back to absolute */ }
+        // requestPointerLock returns a PROMISE; Chrome rejects re-requests
+        // within ~1.3s of an ESC exit — swallow it (absolute path carries on)
+        // and don't hammer the API during the cooldown.
+        const now = performance.now();
+        if (now - lastLockTry > 1500) {
+          lastLockTry = now;
+          try {
+            const p = el.requestPointerLock();
+            if (p && p.catch) p.catch(() => {});
+          } catch (err) { /* fall back to absolute */ }
+        }
       }
       if (locked()) {
         worker.postMessage({ type: 'mouserel', dx: 0, dy: 0, b: e.buttons & 3 });
