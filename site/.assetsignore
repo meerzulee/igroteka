@@ -1,1 +1,5 @@
 gamedata
+# RTW engine snapshots exceed Cloudflare's 25 MiB per-file asset limit
+# (campaign ~85MB, menu ~36MB). They're local build artifacts; serving RTW in
+# production needs R2/streaming, not static assets. Excluded so ZH deploys.
+play/rtw/*.snap.gz

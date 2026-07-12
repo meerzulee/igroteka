@@ -7,12 +7,28 @@
 export const SITE_VERSION = '0.1.0';
 export const ENGINE_BUILD = 24;
 
+// Every language the ZH engine recognizes (registry.cpp tryAutoDetectLanguage).
+// ZH ships localized text/voice in <Language>-named archives; the engine loads
+// whatever <Lang>ZH.big is mounted and auto-detects the language from it, so
+// accepting them all lets any localized install (German, Brazilian, …) import
+// and boot in its own language — no engine or play-page change needed.
+export const ZH_LANGUAGES = [
+  'English', 'German', 'French', 'Spanish', 'Italian',
+  'Brazilian', 'Korean', 'Chinese', 'Polish',
+];
+
+// The localized ZH text/UI archive — one per language; an install has exactly one.
+const ZH_TEXT_ARCHIVES = ZH_LANGUAGES.map((l) => `${l}ZH.big`);
+// Shared ZH expansion archives — language-independent, all required.
+const ZH_SHARED_REQUIRED = [
+  'INIZH.big', 'WindowZH.big', 'gensecZH.big',
+  'TexturesZH.big', 'W3DZH.big', 'TerrainZH.big', 'MapsZH.big',
+];
+
 export const ZH_MANIFEST = {
-  // Zero Hour expansion archives (from the ZH install dir)
-  zh: [
-    'INIZH.big', 'EnglishZH.big', 'WindowZH.big', 'gensecZH.big',
-    'TexturesZH.big', 'W3DZH.big', 'TerrainZH.big', 'MapsZH.big',
-  ],
+  // Zero Hour expansion archives: the shared set plus the localized text
+  // archive. Any one of ZH_TEXT_ARCHIVES satisfies the language requirement.
+  zh: [...ZH_SHARED_REQUIRED, ...ZH_TEXT_ARCHIVES],
   // Base-game archives (same dir on Steam installs, or a separate Generals dir)
   base: ['Textures.big', 'W3D.big', 'Terrain.big', 'Window.big'],
   // Loose files under Data/Scripts — the skirmish AI lives here
@@ -46,10 +62,14 @@ export const ZH_OPTIONAL = {
   cursors: ZH_CURSORS,
   // Sound. Optional: ~900MB total, and the game is fully playable silent.
   // ZH archives mount at /game, base-game ones at /game-base.
-  'audio-zh': ['AudioZH.big', 'AudioEnglishZH.big', 'SpeechZH.big',
-               'SpeechEnglishZH.big', 'MusicZH.big'],
-  'audio-base': ['Audio.big', 'AudioEnglish.big', 'Speech.big',
-                 'SpeechEnglish.big', 'Music.big'],
+  // Voice is localized; the engine reads the language subdir inside whatever
+  // Audio/Speech archive is mounted. Accept the shared + every localized name.
+  'audio-zh': ['AudioZH.big', 'SpeechZH.big', 'MusicZH.big',
+               ...ZH_LANGUAGES.map((l) => `Audio${l}ZH.big`),
+               ...ZH_LANGUAGES.map((l) => `Speech${l}ZH.big`)],
+  'audio-base': ['Audio.big', 'Speech.big', 'Music.big',
+                 ...ZH_LANGUAGES.map((l) => `Audio${l}.big`),
+                 ...ZH_LANGUAGES.map((l) => `Speech${l}.big`)],
 };
 
 const norm = (name) => name.toLowerCase();
@@ -185,11 +205,31 @@ export async function opfsInventory() {
 
 export function missingFiles(inv) {
   const missing = [];
-  for (const [dir, files] of Object.entries(ZH_MANIFEST)) {
+  const zhHave = new Set((inv.zh || []).map(norm));
+  // Shared ZH archives — all required.
+  for (const f of ZH_SHARED_REQUIRED) if (!zhHave.has(norm(f))) missing.push(`zh/${f}`);
+  // Localized text — any one language's <Lang>ZH.big satisfies it.
+  if (!ZH_TEXT_ARCHIVES.some((f) => zhHave.has(norm(f)))) {
+    missing.push('zh/<Language>ZH.big — game language archive (e.g. EnglishZH.big, BrazilianZH.big)');
+  }
+  // Base + scripts — all required, language-independent.
+  for (const dir of ['base', 'scripts']) {
     const have = new Set((inv[dir] || []).map(norm));
-    for (const f of files) if (!have.has(norm(f))) missing.push(`${dir}/${f}`);
+    for (const f of ZH_MANIFEST[dir]) if (!have.has(norm(f))) missing.push(`${dir}/${f}`);
   }
   return missing;
+}
+
+// The install's language, read from its localized text archive. Returns the
+// engine's lowercase language string ('english','brazilian',…) or null. The
+// engine auto-detects this itself at boot; exposed for UI display / an explicit
+// CNC_ZH_LANGUAGE override.
+export function detectLanguage(inv) {
+  const have = new Set((inv.zh || []).map(norm));
+  for (const lang of ZH_LANGUAGES) {
+    if (have.has(norm(`${lang}ZH.big`))) return lang.toLowerCase();
+  }
+  return null;
 }
 
 export async function opfsReadFile(dir, name) {
