@@ -277,10 +277,18 @@ const IG_BRIDGE = new URLSearchParams(location.search).get('bridge') === '1';
 // ?snap=campaign restores rtw.campaign.snap.gz (straight onto the strat map)
 // instead of the menu snapshot; anything else keeps the default.
 const IG_SNAP = new URLSearchParams(location.search).get('snap') || '';
+// Kill switches for A/B bisection (both default ON in the worker): ?m5=0
+// disables call/ret terminators, ?x87=0 the compiled x87 subset. These were
+// previously read by worker.js but never FORWARDED from the page query —
+// ?m5=0 on the page URL silently did nothing.
+const IG_M5 = new URLSearchParams(location.search).get('m5');
+const IG_X87 = new URLSearchParams(location.search).get('x87');
 const workerQS = new URLSearchParams();
 if (IG_DEBUG) workerQS.set('verbose', '1');
 if (IG_JIT) workerQS.set('jit', '1');
 if (IG_BRIDGE) workerQS.set('bridge', '1');
+if (IG_M5 !== null) workerQS.set('m5', IG_M5);
+if (IG_X87 !== null) workerQS.set('x87', IG_X87);
 if (IG_SNAP) workerQS.set('snap', IG_SNAP);
 let worker;
 try { worker = new Worker('worker.js' + (workerQS.toString() ? '?' + workerQS.toString() : '')); }
