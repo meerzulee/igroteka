@@ -301,6 +301,21 @@ if (worker) {
   // oncontextmenu already keeps right-click away from the browser menu). The
   // worker drops these until the game has booted.
   let mousePending = null, mouseRaf = 0;
+  // Pointer lock (?lock=1): click the canvas to capture the pointer; raw
+  // movementX/Y deltas then feed DirectInput 1:1 (type:'mouserel'), which is
+  // what makes the strat-map cursor precise — no host-cursor divergence, no
+  // dead zone at the canvas edge. ESC releases (browser-standard); absolute
+  // events resume automatically.
+  const IG_LOCK = new URLSearchParams(location.search).get('lock') === '1';
+  const locked = () => document.pointerLockElement === canvas ||
+                       document.pointerLockElement === glCanvas;
+  let relDx = 0, relDy = 0, relB = 0, relRaf = 0;
+  function relFlush() {
+    relRaf = 0;
+    const dx = Math.round(relDx), dy = Math.round(relDy);
+    relDx -= dx; relDy -= dy;   // keep sub-pixel remainders
+    if (dx || dy) worker.postMessage({ type: 'mouserel', dx, dy, b: relB });
+  }
   function mouseMsg(e) {
     const el = gpuShown ? glCanvas : canvas;
     const r = el.getBoundingClientRect();
@@ -312,6 +327,17 @@ if (worker) {
   }
   for (const el of [canvas, glCanvas]) {
     el.addEventListener('pointermove', (e) => {
+      if (locked()) {
+        // Deltas SUM between animation frames (absolute events may overwrite;
+        // relative ones must not drop motion). Scale CSS px -> backbuffer px.
+        const r = el.getBoundingClientRect();
+        const s = r.width ? el.width / r.width : 1;
+        relDx += e.movementX * s;
+        relDy += e.movementY * s;
+        relB = e.buttons & 3;
+        if (!relRaf) relRaf = requestAnimationFrame(relFlush);
+        return;
+      }
       mousePending = mouseMsg(e);
       if (mousePending && !mouseRaf) mouseRaf = requestAnimationFrame(() => {
         mouseRaf = 0;
@@ -319,11 +345,22 @@ if (worker) {
       });
     });
     el.addEventListener('pointerdown', (e) => {
+      if (IG_LOCK && !locked()) {
+        try { el.requestPointerLock(); } catch (err) { /* fall back to absolute */ }
+      }
+      if (locked()) {
+        worker.postMessage({ type: 'mouserel', dx: 0, dy: 0, b: e.buttons & 3 });
+        return;
+      }
       try { el.setPointerCapture(e.pointerId); } catch (err) { /* keep going uncaptured */ }
       const m = mouseMsg(e);
       if (m) worker.postMessage(m);
     });
     el.addEventListener('pointerup', (e) => {
+      if (locked()) {
+        worker.postMessage({ type: 'mouserel', dx: 0, dy: 0, b: e.buttons & 3 });
+        return;
+      }
       const m = mouseMsg(e);
       if (m) worker.postMessage(m);
     });
