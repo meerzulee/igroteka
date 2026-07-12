@@ -229,7 +229,7 @@
 <script type="module">
 import { classify, opfsWrite, opfsInventory, missingFiles, requestPersistence,
          zipEntries, gameIconURL, opfsReadFile, opfsWritable, dedupeImports,
-         setGameFavicon, SITE_VERSION, ENGINE_BUILD } from './igroteka.js?v=32';
+         setGameFavicon, detectLanguage, SITE_VERSION, ENGINE_BUILD } from './igroteka.js?v=33';
 setGameFavicon();
 
 // Fullscreen toggle in the taskbar tray. documentElement keeps every XP
@@ -532,7 +532,8 @@ async function openSetup() {
   };
 
   const stepFinish = async () => {
-    const missing = missingFiles(await opfsInventory());
+    const inv = await opfsInventory();
+    const missing = missingFiles(inv);
     if (missing.length) {
       render(`<h3>Almost there</h3><p>Still missing:</p>
         <div class="filelist">${missing.map(m => `<div><span>${m}</span><span class="bad">missing</span></div>`).join('')}</div>
@@ -542,10 +543,16 @@ async function openSetup() {
       return;
     }
     localStorage.setItem('zh-installed', '1');
+    // Record the detected language so the game (and About) can show it; the
+    // engine also auto-detects it from the mounted <Lang>ZH.big at boot.
+    const lang = detectLanguage(inv);
+    if (lang) localStorage.setItem('zh-language', lang);
     placeGameIcon();
+    const langLabel = lang ? lang.charAt(0).toUpperCase() + lang.slice(1) : null;
     render(`<h3>Setup complete ✓</h3>
       <p><b>C&amp;C Generals: Zero Hour</b> is installed. A shortcut has been
-      placed on your desktop.</p>`,
+      placed on your desktop.</p>
+      ${langLabel ? `<p style="color:#0a7a2a">Language detected: <b>${langLabel}</b></p>` : ''}`,
       `<button id="play">Finish &amp; Play</button>`);
     body.querySelector('#play').onclick = () => location.href = 'play/zh/';
   };
