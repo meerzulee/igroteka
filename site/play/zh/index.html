@@ -155,9 +155,17 @@
   </div>
 
 <script type="module">
-import { ZH_MANIFEST, ZH_CURSORS, ZH_OPTIONAL, opfsInventory, missingFiles,
+import { ZH_MANIFEST, ZH_CURSORS, ZH_OPTIONAL, ZH_LANGUAGES, opfsInventory, missingFiles,
          opfsReadFile, loadingImageURL, nativeBarAtlas, drawNativeBar,
          setGameFavicon, ENGINE_BUILD } from '../../igroteka.js?v=23';
+
+// The manifest lists every language's localized archives, but an install has
+// exactly one language. These names are optional-if-absent so mounting keys off
+// what's actually present, not the whole set.
+const LANG_ARCHIVES = new Set(
+  ZH_LANGUAGES.flatMap((l) => [
+    `${l}ZH.big`, `Audio${l}ZH.big`, `Speech${l}ZH.big`, `Audio${l}.big`, `Speech${l}.big`,
+  ]).map((n) => n.toLowerCase()));
 setGameFavicon();
 
 // Fullscreen toggle. documentElement (not the canvas) so overlays like the
@@ -368,12 +376,16 @@ async function sources() {
                   scripts: (n) => `/gamedata/Scripts/${n}` };
     const out = [];
     for (const [dir, files] of Object.entries(ZH_MANIFEST))
-      for (const f of files)
-        out.push({ dir, name: f, load: async () => {
+      for (const f of files) {
+        // /gamedata is one language's build (English); other languages' archives
+        // are absent — optional so a 404 skips instead of failing the load.
+        const optional = LANG_ARCHIVES.has(f.toLowerCase());
+        out.push({ dir, name: f, optional, load: async () => {
           const r = await fetch(map[dir](f));
-          if (!r.ok) throw new Error(`${f}: HTTP ${r.status}`);
+          if (!r.ok) { if (optional) return null; throw new Error(`${f}: HTTP ${r.status}`); }
           return new Uint8Array(await r.arrayBuffer());
         }});
+      }
     for (const f of ZH_CURSORS)
       out.push({ dir: 'cursors', name: f, optional: true, load: async () => {
         const r = await fetch(`/gamedata/Cursors/${f}`);
@@ -409,8 +421,12 @@ async function sources() {
     throw new Error('assets missing');
   }
   const out = [];
-  for (const [dir, files] of Object.entries(ZH_MANIFEST))
-    for (const f of files)
+  // Mount exactly what was imported (inv) — NOT the manifest, which lists every
+  // language's text archive. missingFiles() already verified completeness; the
+  // install has one language, so reading its actual files avoids NotFoundError
+  // on the other languages' archives.
+  for (const dir of ['zh', 'base', 'scripts'])
+    for (const f of (inv[dir] || []))
       out.push({ dir, name: f, load: async () => {
         const file = await opfsReadFile(dir, f);
         return new Uint8Array(await file.arrayBuffer());
